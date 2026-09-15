@@ -129,7 +129,8 @@ async function main() {
   for (const user of users) {
     await prisma.user.upsert({
       where: { email: user.email },
-      update: { name: user.name, role: user.role, passwordHash: user.passwordHash },
+      // Reseeding restores access: a demo account that was deactivated comes back.
+      update: { name: user.name, role: user.role, passwordHash: user.passwordHash, active: true },
       create: user,
     });
   }

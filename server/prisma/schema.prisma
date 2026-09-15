@@ -68,6 +68,9 @@ model User {
   name         String
   passwordHash String
   role         Role     @default(VIEWER)
+  // Accounts are deactivated, never deleted: defects point at the user who raised and
+  // closed them, and that attribution has to outlive someone leaving the company.
+  active       Boolean  @default(true)
   lastLoginAt  DateTime?
   createdAt    DateTime @default(now())
 

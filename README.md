@@ -38,17 +38,22 @@ API, database and role-based access control.
 
 | Role       | Capability                                                        |
 | ---------- | ----------------------------------------------------------------- |
-| `ADMIN`    | Everything, including user management (`/api/auth/users`)          |
+| `ADMIN`    | Everything, plus the Access Control page: add accounts, set roles, deactivate, reset passwords |
 | `ENGINEER` | Raise/close defects, move aircraft, manage stations & impediments  |
 | `VIEWER`   | Read-only access to the whole command centre                       |
+
+Every role can change its own password from the sidebar.
 
 ## API
 
 ```
 POST   /api/auth/login              email + password -> JWT
 GET    /api/auth/me                 current session
+POST   /api/auth/password           change your own password
 GET    /api/auth/users              (ADMIN)
-POST   /api/auth/users              (ADMIN)
+POST   /api/auth/users              (ADMIN) add an account
+PATCH  /api/auth/users/:id          (ADMIN) name / role / active
+POST   /api/auth/users/:id/password (ADMIN) reset someone into their account
 GET    /api/overview                KPI block: open/projected defects, top risk, availability
 GET    /api/fleet                   telemetry rows
 GET    /api/fleet/:registration     full technical record
@@ -85,9 +90,15 @@ to outlive the UI that renders it:
 | ------------------- | ----------------------------------------- | -------------------------- |
 | Remove an aircraft  | it has any defect on file, open or closed | set it `STORED`            |
 | Close a station     | aircraft are still based there            | move them, then close      |
+| Remove a user       | always — defects name who raised them     | deactivate the account     |
 | Withdraw an alert   | never — predictions are working estimates | —                          |
 
-Both refusals return `409` with a message naming what is in the way.
+Each refusal returns `409` with a message naming what is in the way.
+
+Accounts are deactivated rather than deleted: a deactivated user cannot sign in, but every
+defect they raised or closed keeps their name on it. An administrator cannot change their own
+role or deactivate themselves, and the last active administrator cannot be demoted — there is
+always a way back into the system.
 
 ## Local development
 
@@ -154,7 +165,9 @@ typecheck, both test layers, then the build — against a `postgres:16` service 
 | `viewer@dat-lt.aero`    | `FleetView2026!`     | VIEWER   |
 
 Change these before using the deployment for anything real — set `SEED_ADMIN_EMAIL` and
-`SEED_ADMIN_PASSWORD` before the first boot, or rotate via `POST /api/auth/users`.
+`SEED_ADMIN_PASSWORD` before the first boot, then sign in and use **Change password** in the
+sidebar. The demo engineer and viewer accounts can be deactivated from Access Control once
+real people have accounts.
 
 ## Deployment
 

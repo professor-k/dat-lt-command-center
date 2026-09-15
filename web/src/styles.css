@@ -147,6 +147,13 @@ textarea {
   padding-top: 20px;
 }
 
+/* Stacked rather than inline, so the footer actions read as a list like the nav above. */
+.sidebar-footer .link-btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+}
+
 .user-chip {
   display: flex;
   align-items: center;

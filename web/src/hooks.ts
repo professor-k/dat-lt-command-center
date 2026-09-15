@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, getToken, type AircraftDetail, type Defect, type DefectHistory, type FleetRow, type Overview, type PredictiveAlert, type Station } from './api';
+import { api, getToken, type AircraftDetail, type Defect, type DefectHistory, type FleetRow, type ManagedUser, type Overview, type PredictiveAlert, type Station } from './api';
 
 export const useOverview = () =>
   useQuery({ queryKey: ['overview'], queryFn: () => api<Overview>('/overview') });
@@ -33,6 +33,9 @@ export const useDefectHistory = (year?: number) =>
     queryKey: ['history', year ?? 'current'],
     queryFn: () => api<DefectHistory>(`/history${year ? `?year=${year}` : ''}`),
   });
+
+export const useUsers = (enabled = true) =>
+  useQuery({ queryKey: ['users'], queryFn: () => api<{ users: ManagedUser[] }>('/auth/users'), enabled });
 
 export const useAlerts = () =>
   useQuery({ queryKey: ['alerts'], queryFn: () => api<{ alerts: PredictiveAlert[] }>('/alerts') });
@@ -68,6 +71,8 @@ export function useLiveStream() {
     source.addEventListener('alert.updated', refresh(['alerts', 'fleet', 'overview']));
     source.addEventListener('alert.deleted', refresh(['alerts', 'fleet', 'overview', 'aircraft']));
     source.addEventListener('history.updated', refresh(['history', 'overview']));
+    source.addEventListener('user.created', refresh(['users']));
+    source.addEventListener('user.updated', refresh(['users']));
     source.onerror = () => setConnected(false);
 
     return () => source.close();

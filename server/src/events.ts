@@ -13,7 +13,9 @@ export type DomainEvent =
   | { type: 'alert.created'; payload: Record<string, unknown> }
   | { type: 'alert.updated'; payload: Record<string, unknown> }
   | { type: 'alert.deleted'; payload: Record<string, unknown> }
-  | { type: 'history.updated'; payload: Record<string, unknown> };
+  | { type: 'history.updated'; payload: Record<string, unknown> }
+  | { type: 'user.created'; payload: Record<string, unknown> }
+  | { type: 'user.updated'; payload: Record<string, unknown> };
 
 const clients = new Set<FastifyReply>();
 

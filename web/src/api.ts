@@ -70,6 +70,12 @@ export interface User {
   lastLoginAt?: string | null;
 }
 
+/** A user as the admin list returns them — fuller than the session user from /login. */
+export interface ManagedUser extends User {
+  active: boolean;
+  createdAt: string;
+}
+
 export interface PredictiveAlert {
   id: string;
   component: string;
