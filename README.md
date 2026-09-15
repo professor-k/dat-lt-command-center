@@ -99,10 +99,24 @@ DATABASE_URL=postgresql://user:pass@localhost:5432/datlt
 JWT_SECRET=a-long-random-development-secret
 ENV
 
-npm run db:push      # create the schema
+npm run db:migrate   # apply migrations
 npm run db:seed      # load the reference fleet and network
 npm run dev          # API on :8080, Vite on :5173 (proxying /api)
 ```
+
+### Schema changes
+
+The schema is versioned as migrations under `server/prisma/migrations`. After editing
+`schema.prisma`, generate the SQL and apply it locally with:
+
+```bash
+npm run db:migrate:dev -- --name describe_the_change
+```
+
+Commit the generated migration alongside the schema — deployments run `prisma migrate deploy`,
+which only ever plays committed migrations forward and never drops a column to make the
+database match. `npm run db:push` still exists for throwaway experiments, but anything that
+reaches `main` needs a migration.
 
 ## Demo accounts
 
@@ -117,9 +131,9 @@ Change these before using the deployment for anything real — set `SEED_ADMIN_E
 
 ## Deployment
 
-The `Dockerfile` builds the SPA and the API into one image; `docker-entrypoint.sh` syncs the
-Prisma schema, seeds on first boot when `SEED_ON_BOOT=true`, then serves everything from one
-port. On Railway the service needs:
+The `Dockerfile` builds the SPA and the API into one image; `docker-entrypoint.sh` applies any
+pending migrations, seeds on first boot when `SEED_ON_BOOT=true`, then serves everything from
+one port. On Railway the service needs:
 
 | Variable              | Value                                          |
 | --------------------- | ---------------------------------------------- |
@@ -128,5 +142,6 @@ port. On Railway the service needs:
 | `SEED_ON_BOOT`        | `true` (idempotent — skips if data exists)     |
 | `NODE_ENV`            | `production`                                   |
 | `PORT`                | provided by Railway                            |
+| `CORS_ORIGINS`        | only if a browser on another origin calls the API — unset means same-origin only |
 
 Set `SEED_FORCE=true` for one boot to rebuild the reference dataset from scratch.

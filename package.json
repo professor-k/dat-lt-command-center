@@ -3,8 +3,13 @@
   "private": true,
   "version": "1.0.0",
   "description": "DAT LT Outstation Command Center - line maintenance control dashboard",
-  "workspaces": ["server", "web"],
-  "engines": { "node": ">=22" },
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "concurrently -n api,web -c magenta,cyan \"npm:dev:api\" \"npm:dev:web\"",
     "dev:api": "npm run dev -w server",
@@ -13,7 +18,9 @@
     "start": "npm run start -w server",
     "db:push": "npm run db:push -w server",
     "db:seed": "npm run db:seed -w server",
-    "typecheck": "npm run typecheck -w server && npm run typecheck -w web"
+    "typecheck": "npm run typecheck -w server && npm run typecheck -w web",
+    "db:migrate": "npm run db:migrate -w server",
+    "db:migrate:dev": "npm run db:migrate:dev -w server"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

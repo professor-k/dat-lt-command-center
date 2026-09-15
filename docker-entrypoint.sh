@@ -1,9 +1,11 @@
 #!/bin/sh
 set -e
 
-# Bring the database schema up to date, then load reference data on first boot.
-echo "[boot] syncing database schema"
-npx prisma db push --schema=server/prisma/schema.prisma --skip-generate --accept-data-loss
+# Apply any migrations the image was built with, then load reference data on first boot.
+# `migrate deploy` only ever runs committed migrations forward: it never drops a column
+# to make the database match the schema, which `db push --accept-data-loss` would.
+echo "[boot] applying database migrations"
+npx prisma migrate deploy --schema=server/prisma/schema.prisma
 
 if [ "${SEED_ON_BOOT}" = "true" ]; then
   echo "[boot] checking reference data"

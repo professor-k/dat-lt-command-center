@@ -11,7 +11,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate deploy",
-    "db:seed": "tsx src/seed.ts"
+    "db:seed": "tsx src/seed.ts",
+    "db:migrate:dev": "prisma migrate dev"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
@@ -22,12 +23,12 @@
     "@prisma/client": "^6.3.1",
     "bcryptjs": "^2.4.3",
     "fastify": "^5.2.1",
+    "prisma": "^6.3.1",
     "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
     "@types/node": "^22.13.1",
-    "prisma": "^6.3.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3"
   }

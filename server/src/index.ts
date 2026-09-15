@@ -29,8 +29,12 @@ const app = Fastify({
   trustProxy: true,
 });
 
+// In production the API serves the SPA from its own origin, so nothing cross-origin is
+// expected: default to same-origin rather than reflecting whatever Origin arrives, which
+// with credentials enabled would let any site call the API with a user's session.
+// Development still needs the Vite dev server on :5173 to reach it.
 await app.register(cors, {
-  origin: env.CORS_ORIGINS ? env.CORS_ORIGINS.split(',').map((o) => o.trim()) : true,
+  origin: env.CORS_ORIGINS ? env.CORS_ORIGINS.split(',').map((o) => o.trim()) : !isProd,
   credentials: true,
 });
 await app.register(rateLimit, { max: 300, timeWindow: '1 minute' });
