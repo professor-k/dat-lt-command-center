@@ -116,6 +116,12 @@ export interface Defect {
   aircraft?: { registration: string; model?: string; station?: { code: string } | null };
   raisedBy?: { name: string } | null;
   closedBy?: { name: string } | null;
+  /** MEL deferral paperwork, present once a defect has been carried forward. */
+  deferralRef?: string | null;
+  deferralNote?: string | null;
+  deferredAt?: string | null;
+  deferralExpiresAt?: string | null;
+  deferredBy?: { name: string } | null;
 }
 
 export interface AircraftDetail {
@@ -162,6 +168,7 @@ export interface Overview {
   year: number;
   openDefects: number;
   criticalDefects: number;
+  overdueDefects: number;
   projectedDefects: number;
   criticalPredictiveRisk: {
     component: string;

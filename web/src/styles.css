@@ -342,6 +342,20 @@ textarea {
   font-weight: 700;
 }
 
+.stat-foot a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.stat-foot a:hover {
+  color: var(--status-aog);
+}
+
+.stat-card .value.danger {
+  color: var(--status-aog);
+}
+
 .stat-card .value.gold {
   color: var(--accent-gold);
 }
@@ -559,6 +573,13 @@ tbody tr.clickable {
 
 .btn.ghost {
   background: transparent;
+}
+
+/* A rectification window that has already run out. Same red as AOG — it is the same
+   class of problem: an aircraft carrying something it should not still be carrying. */
+.overdue {
+  color: var(--status-aog);
+  font-weight: 500;
 }
 
 .btn.danger {

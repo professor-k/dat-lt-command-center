@@ -26,6 +26,28 @@ API, database and role-based access control.
 - **Defect** — ATA chapter, MEL category (`CRITICAL`…`CAT_D`), status, repetitive flag,
   rectification window. Raising a `CRITICAL` defect grounds the aircraft automatically;
   closing the last one releases it back to service.
+
+### Rectification windows and deferral
+
+Each category carries its own window, and the deadline is derived from it — re-categorising a
+defect moves its deadline with it:
+
+| Category   | Window     |
+| ---------- | ---------- |
+| `CRITICAL` | no-go, now |
+| `CAT_A`    | 1 day      |
+| `CAT_B`    | 3 days     |
+| `CAT_C`    | 10 days    |
+| `CAT_D`    | 120 days   |
+
+Deferring carries a defect forward under the Minimum Equipment List: it records the MEL
+reference, the engineer approving it, an optional note, and an expiry that becomes the
+defect's deadline in place of the category window. A `CRITICAL` defect is no-go by definition
+and cannot be deferred — downgrade the category first. Bringing a deferred defect back to
+`OPEN` drops the deferral and restores the category's own window.
+
+Anything still open past its deadline is **out of MEL window**: counted on the overview and
+listed, latest first, under `?overdue=true`.
 - **PredictiveAlert** — component, severity, horizon in days, model confidence,
   recommendation. Drives the "Critical Predictive Risk" headline.
 - **Station** — IATA code, network status, compliance/audit state, required action.
@@ -60,9 +82,10 @@ GET    /api/fleet/:registration     full technical record
 POST   /api/fleet                   (ENGINEER+) add an airframe
 PATCH  /api/fleet/:registration     (ENGINEER+) status / station / hours
 DELETE /api/fleet/:registration     (ADMIN) remove an airframe with no technical record
-GET    /api/defects                 ?status=&registration=&ataChapter=
+GET    /api/defects                 ?status=&registration=&ataChapter=&overdue=
 POST   /api/defects                 (ENGINEER+)
-PATCH  /api/defects/:id             (ENGINEER+) close / defer / reopen
+PATCH  /api/defects/:id             (ENGINEER+) close / reopen / re-categorise
+POST   /api/defects/:id/defer       (ENGINEER+) carry forward under the MEL
 GET    /api/stations                network status + open impediments
 GET    /api/stations/:code
 POST   /api/stations                (ADMIN) open a station

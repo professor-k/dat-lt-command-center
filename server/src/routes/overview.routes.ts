@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { AlertSeverity } from '@prisma/client';
 import { prisma } from '../db.js';
 import { authenticate } from '../auth.js';
+import { overdueWhere } from './defects.routes.js';
 
 /**
  * actual-to-date + (run rate x remaining months). A complete year is already its own
@@ -83,10 +84,11 @@ export async function overviewRoutes(app: FastifyInstance) {
   app.get('/', async () => {
     const year = new Date().getFullYear();
 
-    const [openDefects, criticalDefects, fleetSize, aog, stations, degradedStations, projected, risk, ataBreakdown] =
+    const [openDefects, criticalDefects, overdueDefects, fleetSize, aog, stations, degradedStations, projected, risk, ataBreakdown] =
       await Promise.all([
         prisma.defect.count({ where: { status: { not: 'CLOSED' } } }),
         prisma.defect.count({ where: { status: { not: 'CLOSED' }, category: 'CRITICAL' } }),
+        prisma.defect.count({ where: overdueWhere() }),
         prisma.aircraft.count(),
         prisma.aircraft.count({ where: { operationalStatus: 'AOG' } }),
         prisma.station.count(),
@@ -108,6 +110,7 @@ export async function overviewRoutes(app: FastifyInstance) {
       year,
       openDefects,
       criticalDefects,
+      overdueDefects,
       projectedDefects: projected,
       criticalPredictiveRisk: risk,
       fleet: { total: fleetSize, aog, availability: fleetSize ? Math.round(((fleetSize - aog) / fleetSize) * 100) : 100 },

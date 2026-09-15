@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useOutletContext } from 'react-router-dom';
+import { Link, useOutletContext } from 'react-router-dom';
 import { api, type FleetRow, type OperationalStatus } from '../api';
 import { useAircraft, useDefectHistory, useFleet, useOverview, useStations } from '../hooks';
 import { useAuth } from '../auth';
@@ -57,6 +57,20 @@ export function FleetPage() {
             <strong>{overviewLoading ? '—' : overview?.openDefects}</strong>
           </p>
           <p className="stat-foot">{overview?.criticalDefects ?? 0} critical / no-go</p>
+        </div>
+
+        <div className={`stat-card${overview?.overdueDefects ? ' danger' : ''}`}>
+          <h3>Out Of MEL Window</h3>
+          <p className={`value${overview?.overdueDefects ? ' danger' : ''}`}>
+            <strong>{overviewLoading ? '—' : overview?.overdueDefects}</strong>
+          </p>
+          <p className="stat-foot">
+            {overview?.overdueDefects ? (
+              <Link to="/defects?overdue=true">rectification overdue — review now</Link>
+            ) : (
+              'every defect inside its window'
+            )}
+          </p>
         </div>
 
         <div className="stat-card gold">
@@ -335,9 +349,25 @@ function AircraftDrawer({ registration, onClose }: { registration: string; onClo
                   </div>
                   <p className="meta" style={{ margin: 0 }}>
                     {defect.reference} · ATA {defect.ataChapter} · raised {formatDate(defect.raisedAt)}
-                    {defect.dueAt ? ` · ${relativeDays(defect.dueAt)}` : ''}
+                    {defect.dueAt ? (
+                      <span
+                        className={
+                          new Date(defect.dueAt).getTime() < Date.now() && defect.status !== 'CLOSED' ? 'overdue' : ''
+                        }
+                      >
+                        {` · ${relativeDays(defect.dueAt)}`}
+                      </span>
+                    ) : null}
                     {defect.repetitive ? ' · repetitive' : ''}
                   </p>
+                  {defect.deferralRef ? (
+                    <p className="meta" style={{ margin: '4px 0 0' }}>
+                      Deferred under MEL {defect.deferralRef}
+                      {defect.deferredBy ? ` by ${defect.deferredBy.name}` : ''}
+                      {defect.deferralExpiresAt ? ` · expires ${formatDate(defect.deferralExpiresAt)}` : ''}
+                      {defect.deferralNote ? ` — ${defect.deferralNote}` : ''}
+                    </p>
+                  ) : null}
                   {editable ? (
                     <div className="record-actions">
                       <button

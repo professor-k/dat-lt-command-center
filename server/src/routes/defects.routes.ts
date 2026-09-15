@@ -9,6 +9,11 @@ const listQuery = z.object({
   status: z.enum(['OPEN', 'DEFERRED', 'CLOSED']).optional(),
   registration: z.string().optional(),
   ataChapter: z.string().optional(),
+  // Anything still open whose rectification window has already run out.
+  overdue: z
+    .enum(['true', 'false'])
+    .optional()
+    .transform((v) => v === 'true'),
   take: z.coerce.number().int().min(1).max(200).default(100),
 });
 
@@ -47,6 +52,21 @@ export function dueDateFor(category: DefectCategory, from: Date = new Date()): D
   return windowDays === null ? null : new Date(from.getTime() + windowDays * 86_400_000);
 }
 
+/**
+ * Still on the aircraft, and past the date it should have been cleared by. Built per call:
+ * a module-level constant would freeze "now" at the moment the server started.
+ */
+export const overdueWhere = () => ({
+  status: { not: 'CLOSED' as const },
+  dueAt: { lt: new Date() },
+});
+
+const deferBody = z.object({
+  deferralRef: z.string().trim().min(2).max(40),
+  expiresAt: z.coerce.date(),
+  note: z.string().trim().max(400).optional(),
+});
+
 async function nextReference() {
   const year = new Date().getFullYear();
   const count = await prisma.defect.count({ where: { reference: { startsWith: `DEF-${year}-` } } });
@@ -59,20 +79,23 @@ export async function defectRoutes(app: FastifyInstance) {
   app.get('/', async (request, reply) => {
     const parsed = listQuery.safeParse(request.query);
     if (!parsed.success) return reply.code(400).send({ error: 'BadRequest', issues: parsed.error.issues });
-    const { status, registration, ataChapter, take } = parsed.data;
+    const { status, registration, ataChapter, overdue, take } = parsed.data;
 
     const defects = await prisma.defect.findMany({
       where: {
         ...(status ? { status } : {}),
         ...(ataChapter ? { ataChapter } : {}),
         ...(registration ? { aircraft: { registration: registration.toUpperCase() } } : {}),
+        ...(overdue ? overdueWhere() : {}),
       },
       include: {
         aircraft: { select: { registration: true, model: true, station: { select: { code: true } } } },
         raisedBy: { select: { name: true } },
         closedBy: { select: { name: true } },
+        deferredBy: { select: { name: true } },
       },
-      orderBy: [{ status: 'asc' }, { raisedAt: 'desc' }],
+      // Overdue is a worklist: the latest first. Otherwise the log reads newest-first.
+      orderBy: overdue ? [{ dueAt: 'asc' }] : [{ status: 'asc' }, { raisedAt: 'desc' }],
       take,
     });
     return { defects };
@@ -117,10 +140,33 @@ export async function defectRoutes(app: FastifyInstance) {
     if (!existing) return reply.code(404).send({ error: 'NotFound', message: 'Defect not found' });
 
     const closing = parsed.data.status === 'CLOSED' && existing.status !== 'CLOSED';
+
+    // Re-categorising changes the rectification window, so the deadline has to move with
+    // it — otherwise a CAT_D downgraded to CAT_A keeps its 120-day date. A defect carried
+    // forward under the MEL keeps the expiry on its deferral instead.
+    const recategorised = parsed.data.category !== undefined && parsed.data.category !== existing.category;
+    const deferred = (parsed.data.status ?? existing.status) === 'DEFERRED';
+    const newDueAt = recategorised && !deferred ? { dueAt: dueDateFor(parsed.data.category!) } : {};
+
+    // Bringing a deferred defect back to OPEN drops the deferral with it.
+    const undeferring = existing.status === 'DEFERRED' && parsed.data.status === 'OPEN';
+    const clearedDeferral = undeferring
+      ? {
+          deferralRef: null,
+          deferralNote: null,
+          deferredAt: null,
+          deferralExpiresAt: null,
+          deferredById: null,
+          dueAt: dueDateFor(parsed.data.category ?? existing.category),
+        }
+      : {};
+
     const defect = await prisma.defect.update({
       where: { id },
       data: {
         ...parsed.data,
+        ...newDueAt,
+        ...clearedDeferral,
         ...(closing ? { closedAt: new Date(), closedById: request.user.sub } : {}),
         ...(parsed.data.status && parsed.data.status !== 'CLOSED' ? { closedAt: null, closedById: null } : {}),
       },
@@ -136,6 +182,55 @@ export async function defectRoutes(app: FastifyInstance) {
         await prisma.aircraft.update({ where: { id: defect.aircraftId }, data: { operationalStatus: 'ACTIVE' } });
       }
     }
+
+    broadcast({ type: 'defect.updated', payload: { id: defect.id, status: defect.status } });
+    return { defect };
+  });
+
+  /**
+   * Carries a defect forward under the MEL against a reference, an approving engineer and
+   * an expiry, which becomes the new deadline. A CRITICAL defect is no-go by definition and
+   * cannot be deferred — that is the rule the AOG grounding exists to enforce.
+   */
+  app.post('/:id/defer', { preHandler: requireRole('ADMIN', 'ENGINEER') }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const parsed = deferBody.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'BadRequest', issues: parsed.error.issues });
+
+    const existing = await prisma.defect.findUnique({ where: { id } });
+    if (!existing) return reply.code(404).send({ error: 'NotFound', message: 'Defect not found' });
+
+    if (existing.status === 'CLOSED') {
+      return reply.code(409).send({ error: 'Conflict', message: 'This defect is already closed' });
+    }
+    if (existing.category === 'CRITICAL') {
+      return reply.code(409).send({
+        error: 'Conflict',
+        message: 'A CRITICAL defect is no-go and cannot be deferred; downgrade the category first',
+      });
+    }
+
+    const { deferralRef, expiresAt, note } = parsed.data;
+    if (expiresAt.getTime() <= Date.now()) {
+      return reply.code(400).send({ error: 'BadRequest', message: 'Deferral expiry must be in the future' });
+    }
+
+    const defect = await prisma.defect.update({
+      where: { id },
+      data: {
+        status: 'DEFERRED',
+        deferralRef,
+        deferralNote: note ?? null,
+        deferralExpiresAt: expiresAt,
+        deferredAt: new Date(),
+        deferredById: request.user.sub,
+        // The MEL expiry is the deadline now; it replaces the category window.
+        dueAt: expiresAt,
+        closedAt: null,
+        closedById: null,
+      },
+      include: { aircraft: { select: { registration: true } }, deferredBy: { select: { name: true } } },
+    });
 
     broadcast({ type: 'defect.updated', payload: { id: defect.id, status: defect.status } });
     return { defect };

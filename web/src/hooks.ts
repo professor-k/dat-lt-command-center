@@ -18,7 +18,7 @@ export const useAircraft = (registration: string | null) =>
 export const useStations = () =>
   useQuery({ queryKey: ['stations'], queryFn: () => api<{ stations: Station[] }>('/stations') });
 
-export const useDefects = (filters: { status?: string; registration?: string; ataChapter?: string }) => {
+export const useDefects = (filters: { status?: string; registration?: string; ataChapter?: string; overdue?: string }) => {
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(filters)) if (value) params.set(key, value);
   const qs = params.toString();

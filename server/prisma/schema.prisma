@@ -74,8 +74,9 @@ model User {
   lastLoginAt  DateTime?
   createdAt    DateTime @default(now())
 
-  defectsRaised  Defect[] @relation("DefectRaisedBy")
-  defectsClosed  Defect[] @relation("DefectClosedBy")
+  defectsRaised   Defect[] @relation("DefectRaisedBy")
+  defectsClosed   Defect[] @relation("DefectClosedBy")
+  defectsDeferred Defect[] @relation("DefectDeferredBy")
 }
 
 model Station {
@@ -125,6 +126,16 @@ model Defect {
   dueAt       DateTime?
   closedAt    DateTime?
 
+  // MEL deferral paperwork. A deferred defect is one carried forward under the Minimum
+  // Equipment List against a specific reference, approved by a named engineer, and it
+  // expires: deferralExpiresAt becomes the defect's dueAt.
+  deferralRef       String?
+  deferralNote      String?
+  deferredAt        DateTime?
+  deferralExpiresAt DateTime?
+  deferredById      String?
+  deferredBy        User?     @relation("DefectDeferredBy", fields: [deferredById], references: [id], onDelete: SetNull)
+
   raisedById String?
   raisedBy   User?   @relation("DefectRaisedBy", fields: [raisedById], references: [id], onDelete: SetNull)
   closedById String?
@@ -132,6 +143,8 @@ model Defect {
 
   @@index([aircraftId, status])
   @@index([ataChapter])
+  // Drives the overdue view: everything still open, ordered by how late it is.
+  @@index([status, dueAt])
 }
 
 model PredictiveAlert {

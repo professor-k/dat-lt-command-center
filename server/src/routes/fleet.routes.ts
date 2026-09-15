@@ -83,7 +83,7 @@ export async function fleetRoutes(app: FastifyInstance) {
       where: { registration: registration.toUpperCase() },
       include: {
         station: true,
-        defects: { orderBy: { raisedAt: 'desc' } },
+        defects: { orderBy: { raisedAt: 'desc' }, include: { deferredBy: { select: { name: true } } } },
         alerts: { orderBy: [{ severity: 'desc' }, { dueInDays: 'asc' }] },
       },
     });

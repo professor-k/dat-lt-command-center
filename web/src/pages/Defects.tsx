@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useOutletContext } from 'react-router-dom';
-import { api, type DefectCategory, type DefectStatus } from '../api';
+import { useOutletContext, useSearchParams } from 'react-router-dom';
+import { api, type Defect, type DefectCategory, type DefectStatus } from '../api';
 import { useDefects, useFleet } from '../hooks';
 import { useAuth } from '../auth';
 import { LiveBadge } from '../components/Shell';
@@ -17,16 +17,25 @@ import {
 
 const CATEGORIES: DefectCategory[] = ['CRITICAL', 'CAT_A', 'CAT_B', 'CAT_C', 'CAT_D'];
 
+/** Still on the aircraft with its rectification window already run out. */
+const isOverdue = (defect: Defect) =>
+  defect.status !== 'CLOSED' && !!defect.dueAt && new Date(defect.dueAt).getTime() < Date.now();
+
 export function DefectsPage() {
   const { connected } = useOutletContext<{ connected: boolean }>();
   const { can } = useAuth();
   const queryClient = useQueryClient();
   const [status, setStatus] = useState<string>('');
   const [registration, setRegistration] = useState<string>('');
+  // Arriving from the Fleet KPI ("/defects?overdue=true") lands on the overdue worklist.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const overdue = searchParams.get('overdue') === 'true' ? 'true' : '';
+  const setOverdue = (value: string) => setSearchParams(value ? { overdue: value } : {}, { replace: true });
   const [raising, setRaising] = useState(false);
+  const [deferring, setDeferring] = useState<Defect | null>(null);
 
   const { data: fleet } = useFleet();
-  const { data, isLoading } = useDefects({ status, registration });
+  const { data, isLoading } = useDefects({ status, registration, overdue });
   const editable = can('ADMIN', 'ENGINEER');
 
   const refresh = () => {
@@ -48,7 +57,11 @@ export function DefectsPage() {
           <h1 className="header-title">
             Technical <span>Defect Log</span>
           </h1>
-          <p className="header-sub">MEL-categorised snags across the fleet, newest first</p>
+          <p className="header-sub">
+            {overdue
+              ? 'Out of MEL window — rectification overdue, latest first'
+              : 'MEL-categorised snags across the fleet, newest first'}
+          </p>
         </div>
         <LiveBadge connected={connected} />
       </div>
@@ -73,6 +86,10 @@ export function DefectsPage() {
                   {a.registration}
                 </option>
               ))}
+            </select>
+            <select value={overdue} onChange={(e) => setOverdue(e.target.value)} aria-label="Filter by deadline">
+              <option value="">Any deadline</option>
+              <option value="true">Overdue only</option>
             </select>
           </div>
           {editable ? (
@@ -117,10 +134,12 @@ export function DefectsPage() {
                     <td className={defect.status === 'CLOSED' ? 'muted' : ''}>
                       {DEFECT_STATUS_LABEL[defect.status]}
                     </td>
-                    <td className="muted">
+                    <td className={isOverdue(defect) ? 'overdue' : 'muted'}>
                       {defect.status === 'CLOSED'
                         ? `closed ${formatDate(defect.closedAt)}`
                         : (relativeDays(defect.dueAt) ?? '—')}
+                      {/* References usually carry their own "MEL-" prefix, so it is not repeated here. */}
+                      {defect.deferralRef ? <span className="sub">{defect.deferralRef}</span> : null}
                     </td>
                     {editable ? (
                       <td>
@@ -141,13 +160,18 @@ export function DefectsPage() {
                             >
                               Close
                             </button>
-                            {defect.status === 'OPEN' ? (
+                            {defect.status === 'OPEN' && defect.category !== 'CRITICAL' ? (
+                              <button className="btn small ghost" onClick={() => setDeferring(defect)}>
+                                Defer
+                              </button>
+                            ) : null}
+                            {defect.status === 'DEFERRED' ? (
                               <button
                                 className="btn small ghost"
                                 disabled={update.isPending}
-                                onClick={() => update.mutate({ id: defect.id, next: 'DEFERRED' })}
+                                onClick={() => update.mutate({ id: defect.id, next: 'OPEN' })}
                               >
-                                Defer
+                                Undefer
                               </button>
                             ) : null}
                           </div>
@@ -169,7 +193,109 @@ export function DefectsPage() {
           onSaved={refresh}
         />
       ) : null}
+      {deferring ? (
+        <DeferDefectModal defect={deferring} onClose={() => setDeferring(null)} onSaved={refresh} />
+      ) : null}
     </section>
+  );
+}
+
+/** Default MEL window offered when deferring, in days. */
+const DEFAULT_DEFERRAL_DAYS = 10;
+
+const isoDaysFromNow = (days: number) =>
+  new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+
+/**
+ * Carrying a defect forward under the MEL is paperwork, not a status flip: it needs a
+ * reference, an expiry and — implicitly — the engineer approving it.
+ */
+function DeferDefectModal({
+  defect,
+  onClose,
+  onSaved,
+}: {
+  defect: Defect;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [form, setForm] = useState({
+    deferralRef: '',
+    expiresAt: isoDaysFromNow(DEFAULT_DEFERRAL_DAYS),
+    note: '',
+  });
+  const [error, setError] = useState<string | null>(null);
+
+  const defer = useMutation({
+    mutationFn: () =>
+      api(`/defects/${defect.id}/defer`, {
+        method: 'POST',
+        body: JSON.stringify({
+          deferralRef: form.deferralRef.trim(),
+          // End of the chosen day, so a same-day expiry is not already in the past.
+          expiresAt: new Date(`${form.expiresAt}T23:59:59`).toISOString(),
+          ...(form.note.trim() ? { note: form.note.trim() } : {}),
+        }),
+      }),
+    onSuccess: () => {
+      onSaved();
+      onClose();
+    },
+    onError: (e: Error) => setError(e.message),
+  });
+
+  const valid = form.deferralRef.trim().length >= 2 && form.expiresAt >= isoDaysFromNow(0);
+
+  return (
+    <Modal title={`Defer ${defect.reference}`} onClose={onClose}>
+      {error ? <p className="error-msg">{error}</p> : null}
+
+      <p className="muted" style={{ fontSize: 13, margin: '0 0 18px' }}>
+        {defect.title} · ATA {defect.ataChapter} · {CATEGORY_LABEL[defect.category]}. The expiry
+        below becomes the defect's deadline, replacing the category window.
+      </p>
+
+      <div className="field">
+        <label htmlFor="df-ref">MEL Reference</label>
+        <input
+          id="df-ref"
+          value={form.deferralRef}
+          placeholder="MEL-36-11-01A"
+          onChange={(e) => setForm({ ...form, deferralRef: e.target.value })}
+        />
+      </div>
+
+      <div className="field">
+        <label htmlFor="df-expiry">Deferral Expires</label>
+        <input
+          id="df-expiry"
+          type="date"
+          min={isoDaysFromNow(0)}
+          value={form.expiresAt}
+          onChange={(e) => setForm({ ...form, expiresAt: e.target.value })}
+        />
+      </div>
+
+      <div className="field">
+        <label htmlFor="df-note">Note</label>
+        <textarea
+          id="df-note"
+          rows={3}
+          value={form.note}
+          placeholder="Optional — e.g. spare on order, ETA MXP Thursday"
+          onChange={(e) => setForm({ ...form, note: e.target.value })}
+        />
+      </div>
+
+      <div className="modal-actions">
+        <button className="btn ghost" onClick={onClose}>
+          Cancel
+        </button>
+        <button className="btn primary" disabled={!valid || defer.isPending} onClick={() => defer.mutate()}>
+          {defer.isPending ? 'Deferring' : 'Defer under MEL'}
+        </button>
+      </div>
+    </Modal>
   );
 }
 
