@@ -52,6 +52,10 @@ listed, latest first, under `?overdue=true`.
   recommendation. Drives the "Critical Predictive Risk" headline.
 - **Station** — IATA code, network status, compliance/audit state, required action.
 - **Impediment** — what is blocking a station (consumables, manpower, tooling…).
+- **AuditLog** — who changed what, and when. Every mutation writes one entry with the actor,
+  a rendered one-line summary and a before/after pair of just the fields that moved. The
+  actor's address and role are copied in at write time so the trail still reads correctly
+  after an account is renamed or deactivated. Read from **Change History** (ADMIN).
 - **DefectHistory** — monthly counts that feed the year-end projection
   (`actual-to-date + run-rate × remaining months`). Maintained by hand from the
   "Edit baseline" control on the projection card, not derived from the defect log.
@@ -60,7 +64,7 @@ listed, latest first, under `?overdue=true`.
 
 | Role       | Capability                                                        |
 | ---------- | ----------------------------------------------------------------- |
-| `ADMIN`    | Everything, plus the Access Control page: add accounts, set roles, deactivate, reset passwords |
+| `ADMIN`    | Everything, plus Access Control (accounts, roles, deactivation, password resets) and Change History |
 | `ENGINEER` | Raise/close defects, move aircraft, manage stations & impediments  |
 | `VIEWER`   | Read-only access to the whole command centre                       |
 
@@ -100,6 +104,8 @@ DELETE /api/alerts/:id              (ENGINEER+) withdraw a prediction
 GET    /api/history                 ?year= monthly defect baseline
 PUT    /api/history                 (ENGINEER+) upsert one month
 DELETE /api/history/:year/:month    (ENGINEER+) clear one month
+GET    /api/audit                   (ADMIN) ?entityType=&entityId=&actorId=&action=&since=
+                                    &take=&cursor= — paged, newest first
 GET    /api/stream                  SSE change feed
 GET    /api/health                  liveness + DB check
 ```

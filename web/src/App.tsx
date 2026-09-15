@@ -7,6 +7,7 @@ import { StationsPage } from './pages/Stations';
 import { DefectsPage } from './pages/Defects';
 import { PredictivePage } from './pages/Predictive';
 import { UsersPage } from './pages/Users';
+import { AuditPage } from './pages/Audit';
 
 export function App() {
   const { user, ready } = useAuth();
@@ -38,6 +39,7 @@ export function App() {
         <Route path="/defects" element={<DefectsPage />} />
         <Route path="/predictive" element={<PredictivePage />} />
         <Route path="/users" element={<UsersPage />} />
+        <Route path="/audit" element={<AuditPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/fleet" replace />} />
     </Routes>

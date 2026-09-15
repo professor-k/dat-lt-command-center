@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { prisma } from '../db.js';
 import { authenticate, requireRole } from '../auth.js';
 import { broadcast } from '../events.js';
+import { changedFields, recordAudit } from '../audit.js';
 
 const loginBody = z.object({
   email: z.string().email(),
@@ -122,6 +123,13 @@ export async function authRoutes(app: FastifyInstance) {
     });
 
     broadcast({ type: 'user.created', payload: { id: user.id, email: user.email } });
+    await recordAudit(request, {
+      action: 'user.created',
+      entityType: 'User',
+      entityId: user.id,
+      summary: `${user.email} added as ${user.role}`,
+      after: { email: user.email, name: user.name, role: user.role, active: user.active },
+    });
     return reply.code(201).send({ user });
   });
 
@@ -164,6 +172,26 @@ export async function authRoutes(app: FastifyInstance) {
     });
 
     broadcast({ type: 'user.updated', payload: { id: user.id, role: user.role, active: user.active } });
+
+    const deactivated = existing.active && !user.active;
+    const reactivated = !existing.active && user.active;
+    const changes = [
+      existing.role !== user.role ? `role ${existing.role} → ${user.role}` : null,
+      deactivated ? 'deactivated' : reactivated ? 'reactivated' : null,
+      existing.name !== user.name ? `renamed to ${user.name}` : null,
+    ].filter(Boolean);
+
+    await recordAudit(request, {
+      action: deactivated ? 'user.deactivated' : reactivated ? 'user.reactivated' : 'user.updated',
+      entityType: 'User',
+      entityId: user.id,
+      summary: `${user.email}: ${changes.length ? changes.join(', ') : 'record updated'}`,
+      ...changedFields(
+        { name: existing.name, role: existing.role, active: existing.active },
+        { name: user.name, role: user.role, active: user.active },
+        ['name', 'role', 'active'],
+      ),
+    });
     return { user };
   });
 
@@ -182,6 +210,13 @@ export async function authRoutes(app: FastifyInstance) {
     });
 
     broadcast({ type: 'user.updated', payload: { id, passwordReset: true } });
+    // The password itself never reaches the log — only that it was reset, by whom.
+    await recordAudit(request, {
+      action: 'user.password_reset',
+      entityType: 'User',
+      entityId: id,
+      summary: `Password reset for ${existing.email}`,
+    });
     return reply.code(204).send();
   });
 }

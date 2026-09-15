@@ -17,6 +17,7 @@ import { stationRoutes } from './routes/stations.routes.js';
 import { alertRoutes } from './routes/alerts.routes.js';
 import { overviewRoutes } from './routes/overview.routes.js';
 import { historyRoutes } from './routes/history.routes.js';
+import { auditRoutes } from './routes/audit.routes.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // dist/app.js -> ../../web/dist
@@ -90,6 +91,7 @@ export async function buildApp({ logger = true, rateLimiting = true }: BuildAppO
   await app.register(stationRoutes, { prefix: '/api/stations' });
   await app.register(alertRoutes, { prefix: '/api/alerts' });
   await app.register(historyRoutes, { prefix: '/api/history' });
+  await app.register(auditRoutes, { prefix: '/api/audit' });
 
   // Serve the built SPA (production single-service deployment). Must stay last: it owns
   // the catch-all not-found handler that falls back to index.html for client routes.

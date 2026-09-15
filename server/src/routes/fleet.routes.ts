@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../db.js';
 import { authenticate, requireRole } from '../auth.js';
 import { broadcast } from '../events.js';
+import { changedFields, recordAudit } from '../audit.js';
 
 /** Registrations are stored upper-case: letters, digits and hyphens (LY-DAT). */
 const registrationField = z
@@ -115,6 +116,13 @@ export async function fleetRoutes(app: FastifyInstance) {
 
     const row = toTelemetryRow(aircraft);
     broadcast({ type: 'aircraft.created', payload: row });
+    await recordAudit(request, {
+      action: 'aircraft.created',
+      entityType: 'Aircraft',
+      entityId: aircraft.id,
+      summary: `${reg} added to the fleet${aircraft.station ? ` at ${aircraft.station.code}` : ''}`,
+      after: { registration: reg, operationalStatus: aircraft.operationalStatus, station: aircraft.station?.code ?? null },
+    });
     return reply.code(201).send({ aircraft: row });
   });
 
@@ -136,7 +144,10 @@ export async function fleetRoutes(app: FastifyInstance) {
         stationId = station.id;
       }
 
-      const existing = await prisma.aircraft.findUnique({ where: { registration: registration.toUpperCase() } });
+      const existing = await prisma.aircraft.findUnique({
+        where: { registration: registration.toUpperCase() },
+        include: { station: { select: { code: true } } },
+      });
       if (!existing) return reply.code(404).send({ error: 'NotFound', message: 'Aircraft not found' });
 
       const aircraft = await prisma.aircraft.update({
@@ -147,6 +158,25 @@ export async function fleetRoutes(app: FastifyInstance) {
 
       const row = toTelemetryRow(aircraft);
       broadcast({ type: 'aircraft.updated', payload: row });
+
+      const movedStation = (existing.station?.code ?? null) !== (aircraft.station?.code ?? null);
+      const changedStatus = existing.operationalStatus !== aircraft.operationalStatus;
+      const parts = [
+        changedStatus ? `status ${existing.operationalStatus} → ${aircraft.operationalStatus}` : null,
+        movedStation ? `moved ${existing.station?.code ?? 'unassigned'} → ${aircraft.station?.code ?? 'unassigned'}` : null,
+      ].filter(Boolean);
+
+      await recordAudit(request, {
+        action: movedStation && !changedStatus ? 'aircraft.moved' : 'aircraft.updated',
+        entityType: 'Aircraft',
+        entityId: aircraft.id,
+        summary: `${aircraft.registration}: ${parts.length ? parts.join(', ') : 'record updated'}`,
+        ...changedFields(
+          { status: existing.operationalStatus, station: existing.station?.code ?? null, flightHours: existing.flightHours, cycles: existing.cycles },
+          { status: aircraft.operationalStatus, station: aircraft.station?.code ?? null, flightHours: aircraft.flightHours, cycles: aircraft.cycles },
+          ['status', 'station', 'flightHours', 'cycles'],
+        ),
+      });
       return { aircraft: row };
     },
   );
@@ -173,6 +203,13 @@ export async function fleetRoutes(app: FastifyInstance) {
 
     await prisma.aircraft.delete({ where: { id: existing.id } });
     broadcast({ type: 'aircraft.deleted', payload: { registration: existing.registration } });
+    await recordAudit(request, {
+      action: 'aircraft.deleted',
+      entityType: 'Aircraft',
+      entityId: existing.id,
+      summary: `${existing.registration} removed from the fleet`,
+      before: { registration: existing.registration, operationalStatus: existing.operationalStatus },
+    });
     return reply.code(204).send();
   });
 }

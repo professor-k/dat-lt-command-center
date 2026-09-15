@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { prisma } from '../db.js';
 import { authenticate, requireRole } from '../auth.js';
 import { broadcast } from '../events.js';
+import { recordAudit } from '../audit.js';
 
 const listQuery = z.object({
   status: z.enum(['OPEN', 'DEFERRED', 'CLOSED']).optional(),
@@ -128,6 +129,15 @@ export async function defectRoutes(app: FastifyInstance) {
     }
 
     broadcast({ type: 'defect.created', payload: { id: defect.id, registration: defect.aircraft.registration } });
+    await recordAudit(request, {
+      action: 'defect.created',
+      entityType: 'Defect',
+      entityId: defect.id,
+      summary:
+        `${defect.reference} raised on ${defect.aircraft.registration}: ${defect.title} (${defect.category})` +
+        (defect.category === 'CRITICAL' ? ' — aircraft grounded' : ''),
+      after: { reference: defect.reference, category: defect.category, ataChapter: defect.ataChapter },
+    });
     return reply.code(201).send({ defect });
   });
 
@@ -184,6 +194,21 @@ export async function defectRoutes(app: FastifyInstance) {
     }
 
     broadcast({ type: 'defect.updated', payload: { id: defect.id, status: defect.status } });
+
+    const changes = [
+      existing.status !== defect.status ? `${existing.status} → ${defect.status}` : null,
+      recategorised ? `category ${existing.category} → ${defect.category}` : null,
+      undeferring ? 'deferral withdrawn' : null,
+    ].filter(Boolean);
+
+    await recordAudit(request, {
+      action: closing ? 'defect.closed' : 'defect.updated',
+      entityType: 'Defect',
+      entityId: defect.id,
+      summary: `${defect.reference} (${defect.aircraft.registration}): ${changes.length ? changes.join(', ') : 'record updated'}`,
+      before: { status: existing.status, category: existing.category, dueAt: existing.dueAt?.toISOString() ?? null },
+      after: { status: defect.status, category: defect.category, dueAt: defect.dueAt?.toISOString() ?? null },
+    });
     return { defect };
   });
 
@@ -233,6 +258,14 @@ export async function defectRoutes(app: FastifyInstance) {
     });
 
     broadcast({ type: 'defect.updated', payload: { id: defect.id, status: defect.status } });
+    await recordAudit(request, {
+      action: 'defect.deferred',
+      entityType: 'Defect',
+      entityId: defect.id,
+      summary: `${defect.reference} (${defect.aircraft.registration}) deferred under ${deferralRef}, expires ${expiresAt.toISOString().slice(0, 10)}`,
+      before: { status: existing.status, dueAt: existing.dueAt?.toISOString() ?? null },
+      after: { status: 'DEFERRED', deferralRef, deferralExpiresAt: expiresAt.toISOString() },
+    });
     return { defect };
   });
 }

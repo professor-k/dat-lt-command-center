@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../db.js';
 import { authenticate, requireRole } from '../auth.js';
 import { broadcast } from '../events.js';
+import { changedFields, recordAudit } from '../audit.js';
 
 const createStation = z.object({
   code: z.string().trim().length(3).regex(/^[A-Za-z]{3}$/, 'Station code must be a 3-letter IATA code'),
@@ -70,6 +71,13 @@ export async function stationRoutes(app: FastifyInstance) {
       include: { impediments: true, aircraft: { select: { registration: true, operationalStatus: true } } },
     });
     broadcast({ type: 'station.created', payload: { code: station.code, networkStatus: station.networkStatus } });
+    await recordAudit(request, {
+      action: 'station.created',
+      entityType: 'Station',
+      entityId: station.id,
+      summary: `${station.code} (${station.city}) opened`,
+      after: { code: station.code, city: station.city, networkStatus: station.networkStatus },
+    });
     return reply.code(201).send({ station });
   });
 
@@ -87,6 +95,17 @@ export async function stationRoutes(app: FastifyInstance) {
       include: { impediments: { where: { status: { not: 'RESOLVED' } } } },
     });
     broadcast({ type: 'station.updated', payload: { code: station.code, networkStatus: station.networkStatus } });
+    await recordAudit(request, {
+      action: 'station.updated',
+      entityType: 'Station',
+      entityId: station.id,
+      summary: `${station.code}: ${existing.networkStatus !== station.networkStatus ? `network ${existing.networkStatus} → ${station.networkStatus}` : 'record updated'}`,
+      ...changedFields(
+        { networkStatus: existing.networkStatus, complianceStatus: existing.complianceStatus, requiredAction: existing.requiredAction },
+        { networkStatus: station.networkStatus, complianceStatus: station.complianceStatus, requiredAction: station.requiredAction },
+        ['networkStatus', 'complianceStatus', 'requiredAction'],
+      ),
+    });
     return { station };
   });
 
@@ -111,6 +130,13 @@ export async function stationRoutes(app: FastifyInstance) {
 
     await prisma.station.delete({ where: { id: existing.id } });
     broadcast({ type: 'station.deleted', payload: { code: existing.code } });
+    await recordAudit(request, {
+      action: 'station.closed',
+      entityType: 'Station',
+      entityId: existing.id,
+      summary: `${existing.code} (${existing.city}) closed`,
+      before: { code: existing.code, city: existing.city, networkStatus: existing.networkStatus },
+    });
     return reply.code(204).send();
   });
 

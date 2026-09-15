@@ -176,6 +176,32 @@ model Impediment {
   @@index([stationId, status])
 }
 
+// Who changed what, and when. Written from the route handlers alongside the SSE
+// broadcast, so anything that mutates the domain leaves a trace here.
+model AuditLog {
+  id String @id @default(cuid())
+
+  // The actor is denormalised deliberately: the log must still read correctly when the
+  // account is renamed, deactivated, or its role changed years later.
+  actorId    String?
+  actorEmail String
+  actorRole  Role
+
+  action     String // "aircraft.moved", "station.closed", "user.deactivated"
+  entityType String // "Aircraft", "Station", "PredictiveAlert", "User", "Defect"
+  entityId   String
+  summary    String // one line, already rendered: "LY-DAT moved from MXP to FCO"
+
+  before Json?
+  after  Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@index([actorId])
+}
+
 // Monthly history used to project the year-end defect count.
 model DefectHistory {
   id     String @id @default(cuid())

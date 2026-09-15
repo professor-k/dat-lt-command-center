@@ -13,6 +13,7 @@ const NAV: { to: string; label: string; roles?: Role[] }[] = [
   { to: '/defects', label: 'Defect Log' },
   { to: '/predictive', label: 'Predictive' },
   { to: '/users', label: 'Access Control', roles: ['ADMIN'] },
+  { to: '/audit', label: 'Change History', roles: ['ADMIN'] },
 ];
 
 export const ROLE_LABEL = { ADMIN: 'Ops Control', ENGINEER: 'Line Engineer', VIEWER: 'Analyst' } as const;

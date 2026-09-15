@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, getToken, type AircraftDetail, type Defect, type DefectHistory, type FleetRow, type ManagedUser, type Overview, type PredictiveAlert, type Station } from './api';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
+import { api, getToken, type AircraftDetail, type AuditEntry, type Defect, type DefectHistory, type FleetRow, type ManagedUser, type Overview, type PredictiveAlert, type Station } from './api';
 
 export const useOverview = () =>
   useQuery({ queryKey: ['overview'], queryFn: () => api<Overview>('/overview') });
@@ -36,6 +36,29 @@ export const useDefectHistory = (year?: number) =>
 
 export const useUsers = (enabled = true) =>
   useQuery({ queryKey: ['users'], queryFn: () => api<{ users: ManagedUser[] }>('/auth/users'), enabled });
+
+/**
+ * The audit trail is the one list that pages: it grows without bound, so it is fetched a
+ * page at a time rather than whole like every other collection here.
+ */
+export const useAudit = (filters: { entityType?: string; action?: string }, enabled = true) => {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) if (value) params.set(key, value);
+  const qs = params.toString();
+
+  return useInfiniteQuery({
+    queryKey: ['audit', qs],
+    queryFn: ({ pageParam }) => {
+      const page = new URLSearchParams(qs);
+      if (pageParam) page.set('cursor', pageParam);
+      const query = page.toString();
+      return api<{ entries: AuditEntry[]; nextCursor: string | null }>(`/audit${query ? `?${query}` : ''}`);
+    },
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+    enabled,
+  });
+};
 
 export const useAlerts = () =>
   useQuery({ queryKey: ['alerts'], queryFn: () => api<{ alerts: PredictiveAlert[] }>('/alerts') });

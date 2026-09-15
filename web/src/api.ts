@@ -70,6 +70,29 @@ export interface User {
   lastLoginAt?: string | null;
 }
 
+export type AuditEntityType =
+  | 'Aircraft'
+  | 'Station'
+  | 'Impediment'
+  | 'PredictiveAlert'
+  | 'Defect'
+  | 'DefectHistory'
+  | 'User';
+
+export interface AuditEntry {
+  id: string;
+  actorId: string | null;
+  actorEmail: string;
+  actorRole: Role;
+  action: string;
+  entityType: AuditEntityType;
+  entityId: string;
+  summary: string;
+  before?: Record<string, unknown> | null;
+  after?: Record<string, unknown> | null;
+  createdAt: string;
+}
+
 /** A user as the admin list returns them — fuller than the session user from /login. */
 export interface ManagedUser extends User {
   active: boolean;

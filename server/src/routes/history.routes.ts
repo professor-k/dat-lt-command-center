@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../db.js';
 import { authenticate, requireRole } from '../auth.js';
 import { broadcast } from '../events.js';
+import { recordAudit } from '../audit.js';
 
 /**
  * Monthly defect counts. These are the baseline the year-end projection on the
@@ -47,6 +48,13 @@ export async function historyRoutes(app: FastifyInstance) {
     });
 
     broadcast({ type: 'history.updated', payload: { year, month, count } });
+    await recordAudit(request, {
+      action: 'history.updated',
+      entityType: 'DefectHistory',
+      entityId: entry.id,
+      summary: `Defect baseline ${year}-${String(month).padStart(2, '0')} set to ${count}`,
+      after: { year, month, count },
+    });
     return { entry };
   });
 
@@ -62,6 +70,13 @@ export async function historyRoutes(app: FastifyInstance) {
 
     await prisma.defectHistory.delete({ where: { id: existing.id } });
     broadcast({ type: 'history.updated', payload: { year, month, count: null } });
+    await recordAudit(request, {
+      action: 'history.cleared',
+      entityType: 'DefectHistory',
+      entityId: existing.id,
+      summary: `Defect baseline ${year}-${String(month).padStart(2, '0')} cleared`,
+      before: { year, month, count: existing.count },
+    });
     return reply.code(204).send();
   });
 }

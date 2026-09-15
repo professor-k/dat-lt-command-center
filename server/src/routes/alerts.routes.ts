@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../db.js';
 import { authenticate, requireRole } from '../auth.js';
 import { broadcast } from '../events.js';
+import { recordAudit } from '../audit.js';
 
 const createAlert = z.object({
   registration: z.string().trim().min(3),
@@ -44,6 +45,13 @@ export async function alertRoutes(app: FastifyInstance) {
     });
 
     broadcast({ type: 'alert.created', payload: { id: alert.id, registration: alert.aircraft.registration } });
+    await recordAudit(request, {
+      action: 'alert.created',
+      entityType: 'PredictiveAlert',
+      entityId: alert.id,
+      summary: `${alert.severity} prediction raised on ${alert.aircraft.registration}: ${alert.component}`,
+      after: { component: alert.component, severity: alert.severity, dueInDays: alert.dueInDays },
+    });
     return reply.code(201).send({ alert });
   });
 
@@ -57,6 +65,14 @@ export async function alertRoutes(app: FastifyInstance) {
 
     const alert = await prisma.predictiveAlert.update({ where: { id }, data: parsed.data });
     broadcast({ type: 'alert.updated', payload: { id: alert.id, acknowledged: alert.acknowledged } });
+    await recordAudit(request, {
+      action: alert.acknowledged ? 'alert.acknowledged' : 'alert.reopened',
+      entityType: 'PredictiveAlert',
+      entityId: alert.id,
+      summary: `${alert.component} prediction ${alert.acknowledged ? 'acknowledged' : 'reopened'}`,
+      before: { acknowledged: !alert.acknowledged },
+      after: { acknowledged: alert.acknowledged },
+    });
     return { alert };
   });
 
@@ -68,6 +84,13 @@ export async function alertRoutes(app: FastifyInstance) {
 
     await prisma.predictiveAlert.delete({ where: { id } });
     broadcast({ type: 'alert.deleted', payload: { id } });
+    await recordAudit(request, {
+      action: 'alert.withdrawn',
+      entityType: 'PredictiveAlert',
+      entityId: id,
+      summary: `Prediction withdrawn: ${existing.component} (ATA ${existing.ataChapter})`,
+      before: { component: existing.component, severity: existing.severity, dueInDays: existing.dueInDays },
+    });
     return reply.code(204).send();
   });
 }
