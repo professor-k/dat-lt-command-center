@@ -158,11 +158,10 @@ which only ever plays committed migrations forward and never drops a column to m
 database match. `npm run db:push` still exists for throwaway experiments, but anything that
 reaches `main` needs a migration.
 
-**One-time baselining.** Databases created by the original `db push` deployments have the
-tables but no migration history, and `migrate deploy` refuses to touch them (P3005). On boot,
-`server/src/baseline.ts` detects exactly that state and records the initial migration as
-applied so the rest can run. Empty and already-migrated databases are left alone. Once no such
-database is left, that file and the baseline branch in `docker-entrypoint.sh` can be deleted.
+A database that predates the migrations — tables but no `_prisma_migrations` — makes
+`migrate deploy` stop with P3005. Record the initial migration as already present once, with
+`npx prisma migrate resolve --applied 20260915213635_init`, and normal deploys resume. No
+such database is left, so this is only here in case an old dump is restored.
 
 ## Tests
 
