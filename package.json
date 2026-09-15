@@ -20,9 +20,13 @@
     "db:seed": "npm run db:seed -w server",
     "typecheck": "npm run typecheck -w server && npm run typecheck -w web",
     "db:migrate": "npm run db:migrate -w server",
-    "db:migrate:dev": "npm run db:migrate:dev -w server"
+    "db:migrate:dev": "npm run db:migrate:dev -w server",
+    "test": "npm run test -w server && npm run test -w web",
+    "test:unit": "npm run test:unit -w server && npm run test -w web",
+    "test:integration": "npm run test:integration -w server"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2"
+    "concurrently": "^9.1.2",
+    "vitest": "^3.2.7"
   }
 }

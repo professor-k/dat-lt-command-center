@@ -118,6 +118,33 @@ which only ever plays committed migrations forward and never drops a column to m
 database match. `npm run db:push` still exists for throwaway experiments, but anything that
 reaches `main` needs a migration.
 
+## Tests
+
+```bash
+npm run test:unit          # formulas only, no database
+npm run test:integration   # real Fastify against a real PostgreSQL
+npm test                   # both
+```
+
+Unit tests cover the year-end projection, the MEL rectification windows, the predictive
+ranking, and the date helpers the UI renders deadlines with.
+
+Integration tests drive the app through `app.inject()` — no socket is bound — against a real
+database, because the rules worth protecting are the ones only a real database enforces:
+grounding on a CRITICAL defect and release on closing the last one, both removal refusals,
+and the role guards. They need a PostgreSQL with the schema applied:
+
+```bash
+docker run -d --name datlt-test -e POSTGRES_PASSWORD=devpass \
+  -e POSTGRES_DB=datlt_test -p 55433:5432 postgres:16-alpine
+
+DATABASE_URL=postgresql://postgres:devpass@127.0.0.1:55433/datlt_test npm run db:migrate
+```
+
+Point `TEST_DATABASE_URL` at any other instance to override. The suite truncates every table
+between tests, so do not aim it at a database you care about. CI runs the whole thing —
+typecheck, both test layers, then the build — against a `postgres:16` service container.
+
 ## Demo accounts
 
 | Email                   | Password             | Role     |

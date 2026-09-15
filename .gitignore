@@ -6,3 +6,4 @@ dist/
 .DS_Store
 server/prisma/dev.db*
 web/dist/
+*.tsbuildinfo

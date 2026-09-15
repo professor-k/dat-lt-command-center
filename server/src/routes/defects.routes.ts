@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import type { DefectCategory } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '../db.js';
 import { authenticate, requireRole } from '../auth.js';
@@ -29,13 +30,22 @@ const patchBody = z.object({
 });
 
 /** MEL-style rectification windows, in days, by defect category. */
-const DUE_DAYS: Record<string, number | null> = {
+const DUE_DAYS: Record<DefectCategory, number | null> = {
   CRITICAL: 0,
   CAT_A: 1,
   CAT_B: 3,
   CAT_C: 10,
   CAT_D: 120,
 };
+
+/**
+ * The rectification deadline a category implies, measured from `from`. A category with
+ * no window (none today) carries no deadline.
+ */
+export function dueDateFor(category: DefectCategory, from: Date = new Date()): Date | null {
+  const windowDays = DUE_DAYS[category];
+  return windowDays === null ? null : new Date(from.getTime() + windowDays * 86_400_000);
+}
 
 async function nextReference() {
   const year = new Date().getFullYear();
@@ -76,9 +86,7 @@ export async function defectRoutes(app: FastifyInstance) {
     const aircraft = await prisma.aircraft.findUnique({ where: { registration: registration.toUpperCase() } });
     if (!aircraft) return reply.code(400).send({ error: 'BadRequest', message: 'Unknown aircraft registration' });
 
-    const windowDays = DUE_DAYS[rest.category];
-    const computedDue =
-      dueAt ?? (windowDays === null ? null : new Date(Date.now() + windowDays * 86_400_000));
+    const computedDue = dueAt ?? dueDateFor(rest.category);
 
     const defect = await prisma.defect.create({
       data: {
