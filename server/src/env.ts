@@ -1,4 +1,15 @@
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+
+// Local development keeps its configuration in server/.env. Neither tsx nor node
+// reads that file on its own, so load it here before validating. Variables already
+// present in the real environment win, which leaves container and Railway
+// deployments (where the platform injects them) untouched.
+// src/env.ts and dist/env.js both sit one level under server/.
+const envFile = join(dirname(fileURLToPath(import.meta.url)), '../.env');
+if (existsSync(envFile)) process.loadEnvFile(envFile);
 
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
