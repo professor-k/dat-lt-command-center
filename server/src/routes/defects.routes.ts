@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import type { DefectCategory } from '@prisma/client';
+import type { DefectCategory, Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '../db.js';
 import { authenticate, requireRole } from '../auth.js';
@@ -99,10 +99,29 @@ async function releaseIfNoLongerGrounded(aircraftId: string): Promise<boolean> {
   return count > 0;
 }
 
-async function nextReference() {
+/**
+ * Creates a defect under the next reference for the year.
+ *
+ * Allocating the number and using it have to happen together: counting first and inserting
+ * afterwards lets two defects raised at the same moment pick the same reference, and since
+ * the column is unique one of them then fails outright — a defect report dropped on the
+ * floor at exactly the moment a busy line is raising them. The advisory lock is held for
+ * the transaction and released on commit, so allocation serialises per year without a
+ * retry loop or a counter table to keep in step.
+ */
+function createDefectWithReference(data: Omit<Prisma.DefectUncheckedCreateInput, 'reference'>) {
   const year = new Date().getFullYear();
-  const count = await prisma.defect.count({ where: { reference: { startsWith: `DEF-${year}-` } } });
-  return `DEF-${year}-${String(count + 1).padStart(4, '0')}`;
+  const prefix = `DEF-${year}-`;
+
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`defect-reference-${year}`}))`;
+    const count = await tx.defect.count({ where: { reference: { startsWith: prefix } } });
+
+    return tx.defect.create({
+      data: { ...data, reference: `${prefix}${String(count + 1).padStart(4, '0')}` },
+      include: { aircraft: { select: { registration: true } } },
+    });
+  });
 }
 
 export async function defectRoutes(app: FastifyInstance) {
@@ -143,15 +162,11 @@ export async function defectRoutes(app: FastifyInstance) {
 
     const computedDue = dueAt ?? dueDateFor(rest.category);
 
-    const defect = await prisma.defect.create({
-      data: {
-        ...rest,
-        reference: await nextReference(),
-        aircraftId: aircraft.id,
-        dueAt: computedDue,
-        raisedById: request.user.sub,
-      },
-      include: { aircraft: { select: { registration: true } } },
+    const defect = await createDefectWithReference({
+      ...rest,
+      aircraftId: aircraft.id,
+      dueAt: computedDue,
+      raisedById: request.user.sub,
     });
 
     // A no-go defect grounds the aircraft immediately.
