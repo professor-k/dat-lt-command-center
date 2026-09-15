@@ -1,0 +1,171 @@
+// DAT LT Outstation Command Center - data model
+// Domain: airline line-maintenance control for an outstation network.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN // full control, user management
+  ENGINEER // may raise / close defects, resolve impediments
+  VIEWER // read-only command centre access
+}
+
+enum OperationalStatus {
+  ACTIVE // in service
+  AOG // aircraft on ground, revenue stopped
+  MAINTENANCE // planned / unplanned maintenance
+  STORED
+}
+
+enum DefectCategory {
+  CRITICAL // no-go, drives AOG
+  CAT_A // rectify before next flight
+  CAT_B // 3 days
+  CAT_C // 10 days
+  CAT_D // 120 days
+}
+
+enum DefectStatus {
+  OPEN
+  DEFERRED // carried forward under MEL
+  CLOSED
+}
+
+enum AlertSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum NetworkStatus {
+  OPTIMAL
+  DEGRADED
+  CRITICAL
+}
+
+enum ComplianceStatus {
+  PASSED
+  PASSED_MINOR
+  PENDING_REVIEW
+  FAILED
+}
+
+enum ImpedimentStatus {
+  OPEN
+  MITIGATED
+  RESOLVED
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         Role     @default(VIEWER)
+  lastLoginAt  DateTime?
+  createdAt    DateTime @default(now())
+
+  defectsRaised  Defect[] @relation("DefectRaisedBy")
+  defectsClosed  Defect[] @relation("DefectClosedBy")
+}
+
+model Station {
+  id               String           @id @default(cuid())
+  code             String           @unique // IATA, e.g. MXP
+  city             String // Milan
+  country          String           @default("Italy")
+  networkStatus    NetworkStatus    @default(OPTIMAL)
+  complianceStatus ComplianceStatus @default(PASSED)
+  lastAuditAt      DateTime?
+  requiredAction   String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  aircraft    Aircraft[]
+  impediments Impediment[]
+}
+
+model Aircraft {
+  id                String            @id @default(cuid())
+  registration      String            @unique // LY-DAT
+  model             String            @default("ATR 72-600")
+  operationalStatus OperationalStatus @default(ACTIVE)
+  flightHours       Float             @default(0)
+  cycles            Int               @default(0)
+  stationId         String?
+  station           Station?          @relation(fields: [stationId], references: [id], onDelete: SetNull)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  defects Defect[]
+  alerts  PredictiveAlert[]
+}
+
+model Defect {
+  id          String         @id @default(cuid())
+  reference   String         @unique // DEF-2026-0001
+  aircraftId  String
+  aircraft    Aircraft       @relation(fields: [aircraftId], references: [id], onDelete: Cascade)
+  ataChapter  String // "36" - Pneumatic
+  title       String
+  description String?
+  category    DefectCategory @default(CAT_C)
+  status      DefectStatus   @default(OPEN)
+  repetitive  Boolean        @default(false)
+  raisedAt    DateTime       @default(now())
+  dueAt       DateTime?
+  closedAt    DateTime?
+
+  raisedById String?
+  raisedBy   User?   @relation("DefectRaisedBy", fields: [raisedById], references: [id], onDelete: SetNull)
+  closedById String?
+  closedBy   User?   @relation("DefectClosedBy", fields: [closedById], references: [id], onDelete: SetNull)
+
+  @@index([aircraftId, status])
+  @@index([ataChapter])
+}
+
+model PredictiveAlert {
+  id             String        @id @default(cuid())
+  aircraftId     String
+  aircraft       Aircraft      @relation(fields: [aircraftId], references: [id], onDelete: Cascade)
+  component      String // "Hydraulic Pump"
+  ataChapter     String
+  severity       AlertSeverity @default(INFO)
+  dueInDays      Int // predicted days to action; 0 = act now
+  confidence     Float         @default(0.8) // 0..1 model confidence
+  recommendation String
+  acknowledged   Boolean       @default(false)
+  createdAt      DateTime      @default(now())
+
+  @@index([aircraftId, acknowledged])
+}
+
+model Impediment {
+  id          String           @id @default(cuid())
+  stationId   String
+  station     Station          @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  category    String // Consumables, Manpower, Tooling, Facility
+  description String
+  status      ImpedimentStatus @default(OPEN)
+  openedAt    DateTime         @default(now())
+  resolvedAt  DateTime?
+
+  @@index([stationId, status])
+}
+
+// Monthly history used to project the year-end defect count.
+model DefectHistory {
+  id     String @id @default(cuid())
+  year   Int
+  month  Int // 1-12
+  count  Int
+
+  @@unique([year, month])
+}

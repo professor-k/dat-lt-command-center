@@ -1,0 +1,109 @@
+# DAT LT — Outstation Command Center
+
+A line-maintenance control application for an airline's outstation network: live fleet
+telemetry, MEL-categorised defect management, predictive component risk, and station
+readiness across the Italian network.
+
+The UI is a production build of the original `docs/Luxury-Dashboard.mockup.html` concept —
+deep-space glassmorphism, gold and violet accents, neon status telemetry — backed by a real
+API, database and role-based access control.
+
+## Stack
+
+| Layer      | Choice                                                 |
+| ---------- | ------------------------------------------------------ |
+| Frontend   | React 19, Vite 6, TanStack Query, React Router          |
+| API        | Fastify 5 (TypeScript, ESM), Zod validation             |
+| Database   | PostgreSQL via Prisma 6                                 |
+| Auth       | JWT bearer tokens, bcrypt hashes, three roles           |
+| Realtime   | Server-Sent Events (`/api/stream`) + query invalidation |
+| Deployment | Single Docker image on Railway (API serves the SPA)     |
+
+## Domain model
+
+- **Aircraft** — registration, model, hours/cycles, operational status (`ACTIVE`, `AOG`,
+  `MAINTENANCE`, `STORED`), current station.
+- **Defect** — ATA chapter, MEL category (`CRITICAL`…`CAT_D`), status, repetitive flag,
+  rectification window. Raising a `CRITICAL` defect grounds the aircraft automatically;
+  closing the last one releases it back to service.
+- **PredictiveAlert** — component, severity, horizon in days, model confidence,
+  recommendation. Drives the "Critical Predictive Risk" headline.
+- **Station** — IATA code, network status, compliance/audit state, required action.
+- **Impediment** — what is blocking a station (consumables, manpower, tooling…).
+- **DefectHistory** — monthly counts that feed the year-end projection
+  (`actual-to-date + run-rate × remaining months`).
+
+## Roles
+
+| Role       | Capability                                                        |
+| ---------- | ----------------------------------------------------------------- |
+| `ADMIN`    | Everything, including user management (`/api/auth/users`)          |
+| `ENGINEER` | Raise/close defects, move aircraft, manage stations & impediments  |
+| `VIEWER`   | Read-only access to the whole command centre                       |
+
+## API
+
+```
+POST   /api/auth/login              email + password -> JWT
+GET    /api/auth/me                 current session
+GET    /api/auth/users              (ADMIN)
+POST   /api/auth/users              (ADMIN)
+GET    /api/overview                KPI block: open/projected defects, top risk, availability
+GET    /api/fleet                   telemetry rows
+GET    /api/fleet/:registration     full technical record
+PATCH  /api/fleet/:registration     (ENGINEER+) status / station / hours
+GET    /api/defects                 ?status=&registration=&ataChapter=
+POST   /api/defects                 (ENGINEER+)
+PATCH  /api/defects/:id             (ENGINEER+) close / defer / reopen
+GET    /api/stations                network status + open impediments
+GET    /api/stations/:code
+PATCH  /api/stations/:code          (ENGINEER+)
+POST   /api/stations/:code/impediments   (ENGINEER+)
+PATCH  /api/stations/impediments/:id     (ENGINEER+)
+GET    /api/alerts                  predictive alerts
+PATCH  /api/alerts/:id              (ENGINEER+) acknowledge
+GET    /api/stream                  SSE change feed
+GET    /api/health                  liveness + DB check
+```
+
+## Local development
+
+```bash
+npm install
+
+cat > server/.env <<'ENV'
+DATABASE_URL=postgresql://user:pass@localhost:5432/datlt
+JWT_SECRET=a-long-random-development-secret
+ENV
+
+npm run db:push      # create the schema
+npm run db:seed      # load the reference fleet and network
+npm run dev          # API on :8080, Vite on :5173 (proxying /api)
+```
+
+## Demo accounts
+
+| Email                   | Password             | Role     |
+| ----------------------- | -------------------- | -------- |
+| `ops@dat-lt.aero`       | `CommandCenter2026!` | ADMIN    |
+| `engineer@dat-lt.aero`  | `LineMaint2026!`     | ENGINEER |
+| `viewer@dat-lt.aero`    | `FleetView2026!`     | VIEWER   |
+
+Change these before using the deployment for anything real — set `SEED_ADMIN_EMAIL` and
+`SEED_ADMIN_PASSWORD` before the first boot, or rotate via `POST /api/auth/users`.
+
+## Deployment
+
+The `Dockerfile` builds the SPA and the API into one image; `docker-entrypoint.sh` syncs the
+Prisma schema, seeds on first boot when `SEED_ON_BOOT=true`, then serves everything from one
+port. On Railway the service needs:
+
+| Variable              | Value                                          |
+| --------------------- | ---------------------------------------------- |
+| `DATABASE_URL`        | `${{Postgres.DATABASE_URL}}`                   |
+| `JWT_SECRET`          | long random string                             |
+| `SEED_ON_BOOT`        | `true` (idempotent — skips if data exists)     |
+| `NODE_ENV`            | `production`                                   |
+| `PORT`                | provided by Railway                            |
+
+Set `SEED_FORCE=true` for one boot to rebuild the reference dataset from scratch.
