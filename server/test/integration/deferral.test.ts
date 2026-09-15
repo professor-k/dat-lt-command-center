@@ -227,4 +227,89 @@ describe('MEL deferral and overdue', () => {
       expect(regs).toEqual(['LY-B', 'LY-A']);
     });
   });
+  describe('deferral cannot be faked', () => {
+    it('refuses a status flip straight to DEFERRED', async () => {
+      const aircraft = await createAircraft('LY-FAK');
+      const defect = await createDefect(aircraft.id, { category: 'CAT_C' });
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/defects/${defect.id}`,
+        headers: auth(engineer),
+        payload: { status: 'DEFERRED' },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json().message).toContain('/defer');
+
+      const after = await prisma.defect.findUniqueOrThrow({ where: { id: defect.id } });
+      expect(after.status).toBe('OPEN');
+      expect(after.deferralRef).toBeNull();
+      expect(after.deferralExpiresAt).toBeNull();
+    });
+
+    it('refuses the flip even for a defect that could legitimately be deferred', async () => {
+      const aircraft = await createAircraft('LY-FK2');
+      const defect = await createDefect(aircraft.id, { category: 'CAT_B' });
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/api/defects/${defect.id}`,
+        headers: auth(engineer),
+        payload: { status: 'DEFERRED', category: 'CAT_D' },
+      });
+
+      expect(response.statusCode).toBe(400);
+      const after = await prisma.defect.findUniqueOrThrow({ where: { id: defect.id } });
+      expect(after.status).toBe('OPEN');
+      expect(after.category).toBe('CAT_B');
+    });
+
+    it('still allows the statuses a defect does move through by hand', async () => {
+      const aircraft = await createAircraft('LY-OKS');
+      const defect = await createDefect(aircraft.id, { category: 'CAT_C' });
+
+      const closed = await app.inject({
+        method: 'PATCH',
+        url: `/api/defects/${defect.id}`,
+        headers: auth(engineer),
+        payload: { status: 'CLOSED' },
+      });
+      expect(closed.statusCode).toBe(200);
+
+      const reopened = await app.inject({
+        method: 'PATCH',
+        url: `/api/defects/${defect.id}`,
+        headers: auth(engineer),
+        payload: { status: 'OPEN' },
+      });
+      expect(reopened.statusCode).toBe(200);
+    });
+
+    it('keeps the MEL expiry as the deadline when a deferred defect is re-categorised', async () => {
+      const aircraft = await createAircraft('LY-REC');
+      const defect = await createDefect(aircraft.id, { category: 'CAT_C' });
+      const expiresAt = new Date(Date.now() + 30 * 86_400_000);
+
+      await app.inject({
+        method: 'POST',
+        url: `/api/defects/${defect.id}/defer`,
+        headers: auth(engineer),
+        payload: { deferralRef: 'MEL-36-11-01A', expiresAt: expiresAt.toISOString() },
+      });
+
+      // Re-categorising must not quietly swap the agreed expiry for the category window.
+      const recategorised = await app.inject({
+        method: 'PATCH',
+        url: `/api/defects/${defect.id}`,
+        headers: auth(engineer),
+        payload: { category: 'CAT_A' },
+      });
+      expect(recategorised.statusCode).toBe(200);
+
+      const after = await prisma.defect.findUniqueOrThrow({ where: { id: defect.id } });
+      expect(after.category).toBe('CAT_A');
+      expect(after.dueAt?.toISOString()).toBe(expiresAt.toISOString());
+    });
+  });
 });

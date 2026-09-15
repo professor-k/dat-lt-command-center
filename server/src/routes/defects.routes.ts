@@ -28,8 +28,12 @@ const createBody = z.object({
   dueAt: z.coerce.date().optional(),
 });
 
+// DEFERRED is deliberately not settable here. Carrying a defect forward under the MEL is
+// paperwork — a reference, an approving engineer and an expiry — and POST /:id/defer is the
+// only way to produce it. Allowing the status to be flipped straight to DEFERRED made all
+// of that optional, including the refusal to defer a no-go defect.
 const patchBody = z.object({
-  status: z.enum(['OPEN', 'DEFERRED', 'CLOSED']).optional(),
+  status: z.enum(['OPEN', 'CLOSED']).optional(),
   category: z.enum(['CRITICAL', 'CAT_A', 'CAT_B', 'CAT_C', 'CAT_D']).optional(),
   description: z.string().optional(),
   repetitive: z.boolean().optional(),
@@ -168,6 +172,16 @@ export async function defectRoutes(app: FastifyInstance) {
 
   app.patch('/:id', { preHandler: requireRole('ADMIN', 'ENGINEER') }, async (request, reply) => {
     const { id } = request.params as { id: string };
+
+    // Said plainly, rather than as an enum error, because this is the one status someone
+    // will reasonably expect to be able to set here.
+    if ((request.body as { status?: string } | null)?.status === 'DEFERRED') {
+      return reply.code(400).send({
+        error: 'BadRequest',
+        message: 'Deferral is paperwork, not a status flip — use POST /api/defects/:id/defer',
+      });
+    }
+
     const parsed = patchBody.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'BadRequest', issues: parsed.error.issues });
 
@@ -180,8 +194,8 @@ export async function defectRoutes(app: FastifyInstance) {
     // it — otherwise a CAT_D downgraded to CAT_A keeps its 120-day date. A defect carried
     // forward under the MEL keeps the expiry on its deferral instead.
     const recategorised = parsed.data.category !== undefined && parsed.data.category !== existing.category;
-    const deferred = (parsed.data.status ?? existing.status) === 'DEFERRED';
-    const newDueAt = recategorised && !deferred ? { dueAt: dueDateFor(parsed.data.category!) } : {};
+    const staysDeferred = existing.status === 'DEFERRED' && parsed.data.status !== 'OPEN';
+    const newDueAt = recategorised && !staysDeferred ? { dueAt: dueDateFor(parsed.data.category!) } : {};
 
     // Bringing a deferred defect back to OPEN drops the deferral with it.
     const undeferring = existing.status === 'DEFERRED' && parsed.data.status === 'OPEN';
