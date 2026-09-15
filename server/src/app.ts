@@ -10,6 +10,7 @@ import fastifyStatic from '@fastify/static';
 import { env, isProd } from './env.js';
 import { prisma } from './db.js';
 import { addClient, clientCount } from './events.js';
+import { STREAM_TICKET_TYPE, type StreamTicket } from './auth.js';
 import { authRoutes } from './routes/auth.routes.js';
 import { fleetRoutes } from './routes/fleet.routes.js';
 import { defectRoutes } from './routes/defects.routes.js';
@@ -42,7 +43,23 @@ export interface BuildAppOptions {
  */
 export async function buildApp({ logger = true, rateLimiting = true }: BuildAppOptions = {}): Promise<FastifyInstance> {
   const app = Fastify({
-    logger: logger ? (isProd ? { level: 'info' } : { level: 'info', transport: undefined }) : false,
+    logger: logger
+      ? {
+          level: 'info',
+          ...(isProd ? {} : { transport: undefined }),
+          // Request lines are logged with their URL, and the stream carries its credential
+          // in the query string because EventSource cannot set a header. Logging the path
+          // without the query keeps that — and anything else a URL picks up — out of the
+          // log, at the cost of nothing anyone reads these lines for.
+          serializers: {
+            req: (request: { method: string; url: string; ip: string }) => ({
+              method: request.method,
+              url: request.url.split('?')[0],
+              remoteAddress: request.ip,
+            }),
+          },
+        }
+      : false,
     trustProxy: true,
   });
 
@@ -63,12 +80,21 @@ export async function buildApp({ logger = true, rateLimiting = true }: BuildAppO
   });
 
   // Server-sent events stream powering the live telemetry board.
-  // EventSource cannot set headers, so the token may also arrive as a query param.
+  //
+  // EventSource cannot set headers, so a browser authorises the stream with a ticket in the
+  // query string — deliberately not the session token, which would then be written into
+  // every access log along the way and stay valid for its full twelve hours. Tickets last
+  // thirty seconds and authorise nothing else. A bearer header still works, for anything
+  // that can set one.
   app.get('/api/stream', async (request, reply) => {
-    const queryToken = (request.query as { token?: string }).token;
+    const { ticket } = request.query as { ticket?: string };
     try {
-      if (queryToken) app.jwt.verify(queryToken);
-      else await request.jwtVerify();
+      if (ticket) {
+        const claims = app.jwt.verify<StreamTicket>(ticket);
+        if (claims.typ !== STREAM_TICKET_TYPE) throw new Error('not a stream ticket');
+      } else {
+        await request.jwtVerify();
+      }
     } catch {
       return reply.code(401).send({ error: 'Unauthorized', message: 'Valid session required' });
     }

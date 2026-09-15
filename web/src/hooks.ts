@@ -72,33 +72,81 @@ export function useLiveStream() {
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
-    const token = getToken();
-    if (!token) return;
+    if (!getToken()) return;
 
-    const source = new EventSource(`/api/stream?token=${encodeURIComponent(token)}`);
+    let source: EventSource | null = null;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let attempt = 0;
+    let cancelled = false;
+
     const refresh = (keys: string[]) => () => {
       for (const key of keys) void queryClient.invalidateQueries({ queryKey: [key] });
     };
 
-    source.addEventListener('connected', () => setConnected(true));
-    source.addEventListener('defect.created', refresh(['defects', 'fleet', 'overview']));
-    source.addEventListener('defect.updated', refresh(['defects', 'fleet', 'overview', 'aircraft']));
-    source.addEventListener('aircraft.created', refresh(['fleet', 'overview', 'stations']));
-    source.addEventListener('aircraft.updated', refresh(['fleet', 'overview', 'aircraft', 'stations']));
-    source.addEventListener('aircraft.deleted', refresh(['fleet', 'overview', 'aircraft', 'stations', 'alerts']));
-    source.addEventListener('station.created', refresh(['stations', 'overview']));
-    source.addEventListener('station.updated', refresh(['stations', 'overview']));
-    source.addEventListener('station.deleted', refresh(['stations', 'overview', 'fleet']));
-    source.addEventListener('impediment.updated', refresh(['stations', 'overview']));
-    source.addEventListener('alert.created', refresh(['alerts', 'fleet', 'overview']));
-    source.addEventListener('alert.updated', refresh(['alerts', 'fleet', 'overview']));
-    source.addEventListener('alert.deleted', refresh(['alerts', 'fleet', 'overview', 'aircraft']));
-    source.addEventListener('history.updated', refresh(['history', 'overview']));
-    source.addEventListener('user.created', refresh(['users']));
-    source.addEventListener('user.updated', refresh(['users']));
-    source.onerror = () => setConnected(false);
+    /**
+     * The stream is opened with a thirty-second ticket rather than the session token,
+     * which would otherwise be written into every access log between here and the server.
+     * A ticket outlives a hiccup but not a real drop, so a reconnect fetches a fresh one
+     * rather than leaving EventSource retrying a credential that has expired.
+     */
+    const connect = async () => {
+      if (cancelled) return;
+      try {
+        const { ticket } = await api<{ ticket: string }>('/auth/stream-ticket', { method: 'POST' });
+        if (cancelled) return;
+        source = new EventSource(`/api/stream?ticket=${encodeURIComponent(ticket)}`);
+      } catch {
+        scheduleReconnect();
+        return;
+      }
 
-    return () => source.close();
+      source.addEventListener('connected', () => {
+        attempt = 0;
+        setConnected(true);
+      });
+      subscribe(source);
+      source.onerror = () => {
+        setConnected(false);
+        source?.close();
+        source = null;
+        scheduleReconnect();
+      };
+    };
+
+    const scheduleReconnect = () => {
+      if (cancelled) return;
+      // 1s, 2s, 4s … capped, so a server restart is picked up quickly and an outage is not
+      // hammered.
+      const delay = Math.min(1000 * 2 ** attempt, 30_000);
+      attempt += 1;
+      retry = setTimeout(() => void connect(), delay);
+    };
+
+    const subscribe = (source: EventSource) => {
+      source.addEventListener('defect.created', refresh(['defects', 'fleet', 'overview']));
+      source.addEventListener('defect.updated', refresh(['defects', 'fleet', 'overview', 'aircraft']));
+      source.addEventListener('aircraft.created', refresh(['fleet', 'overview', 'stations']));
+      source.addEventListener('aircraft.updated', refresh(['fleet', 'overview', 'aircraft', 'stations']));
+      source.addEventListener('aircraft.deleted', refresh(['fleet', 'overview', 'aircraft', 'stations', 'alerts']));
+      source.addEventListener('station.created', refresh(['stations', 'overview']));
+      source.addEventListener('station.updated', refresh(['stations', 'overview']));
+      source.addEventListener('station.deleted', refresh(['stations', 'overview', 'fleet']));
+      source.addEventListener('impediment.updated', refresh(['stations', 'overview']));
+      source.addEventListener('alert.created', refresh(['alerts', 'fleet', 'overview']));
+      source.addEventListener('alert.updated', refresh(['alerts', 'fleet', 'overview']));
+      source.addEventListener('alert.deleted', refresh(['alerts', 'fleet', 'overview', 'aircraft']));
+      source.addEventListener('history.updated', refresh(['history', 'overview']));
+      source.addEventListener('user.created', refresh(['users']));
+      source.addEventListener('user.updated', refresh(['users']));
+    };
+
+    void connect();
+
+    return () => {
+      cancelled = true;
+      clearTimeout(retry);
+      source?.close();
+    };
   }, [queryClient]);
 
   return connected;

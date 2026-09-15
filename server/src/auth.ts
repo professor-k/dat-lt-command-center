@@ -11,9 +11,25 @@ declare module 'fastify' {
 
 declare module '@fastify/jwt' {
   interface FastifyJWT {
-    payload: { sub: string; email: string; name: string; role: Role; issuedAtMs: number };
+    payload:
+      | { sub: string; email: string; name: string; role: Role; issuedAtMs: number }
+      | { sub: string; typ: typeof STREAM_TICKET_TYPE };
     user: { sub: string; email: string; name: string; role: Role; iat?: number; issuedAtMs?: number };
   }
+}
+
+/**
+ * Marks a token as authorising the event stream and nothing else, so one cannot be passed
+ * off as a session. Tickets are minted by POST /api/auth/stream-ticket.
+ */
+export const STREAM_TICKET_TYPE = 'stream' as const;
+
+/** Long enough for the browser to open the stream and reconnect once or twice. */
+export const STREAM_TICKET_TTL = '30s';
+
+export interface StreamTicket {
+  sub: string;
+  typ: typeof STREAM_TICKET_TYPE;
 }
 
 const unauthorized = (reply: FastifyReply, message: string) =>
@@ -33,6 +49,12 @@ export async function authenticate(request: FastifyRequest, reply: FastifyReply)
   try {
     await request.jwtVerify();
   } catch {
+    return unauthorized(reply, 'Valid session required');
+  }
+
+  // A stream ticket is a valid signature over a real account id, so without this it would
+  // be honoured here as a session — the narrow credential turned into a broad one.
+  if ((request.user as { typ?: string }).typ === STREAM_TICKET_TYPE) {
     return unauthorized(reply, 'Valid session required');
   }
 

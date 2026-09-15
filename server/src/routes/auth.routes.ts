@@ -1,9 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import type { Role } from '@prisma/client';
+import { createHash, randomBytes } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { prisma } from '../db.js';
-import { authenticate, requireRole } from '../auth.js';
+import { env } from '../env.js';
+import { canSendMail, mailTransport } from '../mail.js';
+import { authenticate, requireRole, STREAM_TICKET_TTL, STREAM_TICKET_TYPE } from '../auth.js';
 import { broadcast } from '../events.js';
 import { changedFields, recordAudit } from '../audit.js';
 
@@ -35,6 +38,20 @@ const changePasswordBody = z.object({
 });
 
 const resetPasswordBody = z.object({ newPassword: passwordField });
+
+const forgotBody = z.object({ email: z.string().email() });
+
+const resetBody = z.object({ token: z.string().min(16), newPassword: passwordField });
+
+/** Long enough to walk to a desk and read the mail, short enough not to linger. */
+const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
+
+/**
+ * Reset tokens are stored as a digest, never in the clear. A plain SHA-256 is right here
+ * where bcrypt is not: the token is 32 random bytes, so there is nothing to brute-force,
+ * and the lookup has to be exact rather than slow.
+ */
+const hashResetToken = (token: string) => createHash('sha256').update(token).digest('hex');
 
 const publicUser = {
   id: true,
@@ -136,6 +153,106 @@ export async function authRoutes(app: FastifyInstance) {
   app.post('/refresh', { preHandler: authenticate }, async (request) => {
     const { sub, email, name, role } = request.user;
     return { token: signSession({ id: sub, email, name, role }) };
+  });
+
+  /**
+   * A short-lived credential for opening the event stream.
+   *
+   * EventSource cannot set headers, so whatever authorises the stream travels in the query
+   * string — and query strings are written to access logs, at the proxy as well as here.
+   * A session token would sit in those logs for its full twelve hours; this one is spent
+   * within the minute. It is reusable inside that window, so the browser's own reconnect
+   * still works, and it authorises nothing but the stream.
+   */
+  app.post('/stream-ticket', { preHandler: authenticate }, async (request) => {
+    return {
+      ticket: app.jwt.sign(
+        { sub: request.user.sub, typ: STREAM_TICKET_TYPE },
+        { expiresIn: STREAM_TICKET_TTL },
+      ),
+      expiresInSeconds: 30,
+    };
+  });
+
+  /**
+   * Starts a self-service password reset.
+   *
+   * Always answers the same way, whatever the address: telling an anonymous caller whether
+   * an address is registered is a way to enumerate the staff list. When no mail transport
+   * is configured nothing is sent and the answer still does not change — the response says
+   * what will happen either way, and an administrator reset remains the way back in.
+   */
+  app.post('/forgot', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (request, reply) => {
+    const parsed = forgotBody.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'BadRequest', message: 'A valid email address is required' });
+
+    const user = await prisma.user.findUnique({ where: { email: parsed.data.email.toLowerCase() } });
+
+    if (user?.active && mailTransport) {
+      // The database keeps only a hash: a stolen backup should not be a stack of live
+      // reset links. What goes in the mail is the one copy that works.
+      const token = randomBytes(32).toString('base64url');
+      await prisma.passwordResetToken.create({
+        data: {
+          userId: user.id,
+          tokenHash: hashResetToken(token),
+          expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS),
+        },
+      });
+
+      const link = `${env.PUBLIC_URL ?? ''}/reset-password?token=${token}`;
+      await mailTransport.send(
+        {
+          to: user.email,
+          subject: 'DAT LT Command Center — password reset',
+          body: `A password reset was requested for this account.\n\n${link}\n\nThe link is good for one hour and can be used once. If this was not you, nothing has changed.`,
+        },
+        request.log,
+      );
+    }
+
+    return {
+      message: canSendMail
+        ? 'If that address has an account, a reset link is on its way.'
+        : 'Password resets by email are not configured here — ask an administrator to reset your password.',
+    };
+  });
+
+  /** Completes a reset. The token proves the address, so no current password is asked for. */
+  app.post('/reset', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
+    const parsed = resetBody.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'BadRequest', issues: parsed.error.issues });
+
+    const record = await prisma.passwordResetToken.findUnique({
+      where: { tokenHash: hashResetToken(parsed.data.token) },
+      include: { user: { select: { id: true, active: true } } },
+    });
+
+    // One message for every way a token can be no good, so a failed attempt says nothing
+    // about whether the token ever existed.
+    const unusable = !record || record.usedAt !== null || record.expiresAt < new Date() || !record.user.active;
+    if (unusable) {
+      return reply.code(400).send({ error: 'BadRequest', message: 'That reset link is no longer valid; request a new one' });
+    }
+
+    await prisma.$transaction([
+      prisma.user.update({
+        where: { id: record.userId },
+        data: {
+          passwordHash: await bcrypt.hash(parsed.data.newPassword, BCRYPT_COST),
+          // Whoever was in the account on the old password is now out of it.
+          sessionsValidFrom: new Date(),
+        },
+      }),
+      prisma.passwordResetToken.update({ where: { id: record.id }, data: { usedAt: new Date() } }),
+      // Any other outstanding link for this account is spent too.
+      prisma.passwordResetToken.updateMany({
+        where: { userId: record.userId, usedAt: null },
+        data: { usedAt: new Date() },
+      }),
+    ]);
+
+    return reply.code(204).send();
   });
 
   app.get('/users', { preHandler: [authenticate, requireRole('ADMIN')] }, async () => {

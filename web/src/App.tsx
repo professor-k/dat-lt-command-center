@@ -22,6 +22,18 @@ export function App() {
     );
   }
 
+  // A reset link arrives with its token in the query string, and the catch-all below would
+  // redirect that away before anything could read it. It also has to win over a live
+  // session: someone following a reset link on a device they are still signed in on wants
+  // the reset form, not the fleet board.
+  if (new URLSearchParams(window.location.search).has('token')) {
+    return (
+      <Routes>
+        <Route path="*" element={<LoginPage />} />
+      </Routes>
+    );
+  }
+
   if (!user) {
     return (
       <Routes>

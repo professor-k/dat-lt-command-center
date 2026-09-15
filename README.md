@@ -60,6 +60,23 @@ listed, latest first, under `?overdue=true`.
   (`actual-to-date + run-rate × remaining months`). Maintained by hand from the
   "Edit baseline" control on the projection card, not derived from the defect log.
 
+## Sessions
+
+A session is a bearer token good for twelve hours, renewed in the background so it does not
+expire mid-shift. Every request re-reads the account behind it, so deactivating or demoting
+someone through Access Control takes effect on their next request rather than whenever their
+token happens to run out. Changing a password, resetting one, and signing out all invalidate
+every token issued for that account — a password change hands the device doing the work a
+replacement, so it alone stays signed in.
+
+The event stream is opened with a thirty-second ticket from `POST /api/auth/stream-ticket`
+rather than the session token, because EventSource cannot set headers and query strings end
+up in access logs.
+
+Self-service password reset is off unless `MAIL_TRANSPORT` is configured; there is no SMTP
+transport yet, so an administrator reset is the supported way back into an account. The
+endpoints, single-use tokens and UI are in place behind that seam.
+
 ## Roles
 
 | Role       | Capability                                                        |
@@ -75,7 +92,12 @@ Every role can change its own password from the sidebar.
 ```
 POST   /api/auth/login              email + password -> JWT
 GET    /api/auth/me                 current session
-POST   /api/auth/password           change your own password
+POST   /api/auth/logout             sign this account out everywhere
+POST   /api/auth/refresh            extend a still-valid session
+POST   /api/auth/stream-ticket      short-lived credential for /api/stream
+POST   /api/auth/password           change your own password (returns a replacement token)
+POST   /api/auth/forgot             request a reset link (see MAIL_TRANSPORT)
+POST   /api/auth/reset              set a new password from a reset link
 GET    /api/auth/users              (ADMIN)
 POST   /api/auth/users              (ADMIN) add an account
 PATCH  /api/auth/users/:id          (ADMIN) name / role / active
@@ -106,7 +128,7 @@ PUT    /api/history                 (ENGINEER+) upsert one month
 DELETE /api/history/:year/:month    (ENGINEER+) clear one month
 GET    /api/audit                   (ADMIN) ?entityType=&entityId=&actorId=&action=&since=
                                     &take=&cursor= — paged, newest first
-GET    /api/stream                  SSE change feed
+GET    /api/stream                  SSE change feed (?ticket=)
 GET    /api/health                  liveness + DB check
 ```
 
@@ -190,7 +212,7 @@ Point `TEST_DATABASE_URL` at any other instance to override. The suite truncates
 between tests, so do not aim it at a database you care about. CI runs the whole thing —
 typecheck, both test layers, then the build — against a `postgres:16` service container.
 
-## Demo accounts
+## Demo accounts — local development only
 
 | Email                   | Password             | Role     |
 | ----------------------- | -------------------- | -------- |
@@ -198,10 +220,11 @@ typecheck, both test layers, then the build — against a `postgres:16` service 
 | `engineer@dat-lt.aero`  | `LineMaint2026!`     | ENGINEER |
 | `viewer@dat-lt.aero`    | `FleetView2026!`     | VIEWER   |
 
-Change these before using the deployment for anything real — set `SEED_ADMIN_EMAIL` and
-`SEED_ADMIN_PASSWORD` before the first boot, then sign in and use **Change password** in the
-sidebar. The demo engineer and viewer accounts can be deactivated from Access Control once
-real people have accounts.
+These are printed here, so they are not credentials — they are a convenience for a database
+on your own machine, and the sign-in screen only offers them in a development build. A
+production boot **refuses to start** on them: set `SEED_ADMIN_EMAIL` and
+`SEED_ADMIN_PASSWORD` to something of your own first. The demo engineer and viewer accounts
+can be deactivated from Access Control once real people have accounts.
 
 ## Deployment
 

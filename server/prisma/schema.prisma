@@ -80,6 +80,22 @@ model User {
   defectsRaised   Defect[] @relation("DefectRaisedBy")
   defectsClosed   Defect[] @relation("DefectClosedBy")
   defectsDeferred Defect[] @relation("DefectDeferredBy")
+  passwordResets  PasswordResetToken[]
+}
+
+// A password reset someone asked for themselves. The token is stored hashed, because the
+// database copy is not the one that should be usable — only the link that was sent out is.
+// Single use and short lived: `usedAt` is set the moment it is spent.
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
 }
 
 model Station {
