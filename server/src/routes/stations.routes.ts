@@ -152,6 +152,13 @@ export async function stationRoutes(app: FastifyInstance) {
       data: { ...parsed.data, stationId: station.id },
     });
     broadcast({ type: 'impediment.updated', payload: { stationCode: station.code, id: impediment.id } });
+    await recordAudit(request, {
+      action: 'impediment.opened',
+      entityType: 'Impediment',
+      entityId: impediment.id,
+      summary: `${station.code}: ${impediment.category} impediment opened — ${impediment.description}`,
+      after: { station: station.code, category: impediment.category, description: impediment.description, status: impediment.status },
+    });
     return reply.code(201).send({ impediment });
   });
 
@@ -171,6 +178,17 @@ export async function stationRoutes(app: FastifyInstance) {
       },
     });
     broadcast({ type: 'impediment.updated', payload: { stationCode: existing.station.code, id } });
+    await recordAudit(request, {
+      action: impediment.status === 'RESOLVED' ? 'impediment.resolved' : 'impediment.updated',
+      entityType: 'Impediment',
+      entityId: impediment.id,
+      summary: `${existing.station.code}: ${existing.category} impediment ${existing.status} → ${impediment.status}`,
+      ...changedFields(
+        { status: existing.status, resolvedAt: existing.resolvedAt },
+        { status: impediment.status, resolvedAt: impediment.resolvedAt },
+        ['status', 'resolvedAt'],
+      ),
+    });
     return { impediment };
   });
 }

@@ -146,6 +146,47 @@ describe('audit trail', () => {
       const { entries } = await audit('?action=aircraft.deleted');
       expect(entries).toHaveLength(0);
     });
+
+    it('records opening a station impediment', async () => {
+      const station = await createStation('NAP', 'Naples');
+
+      const opened = await app.inject({
+        method: 'POST',
+        url: `/api/stations/${station.code}/impediments`,
+        headers: auth(admin),
+        payload: { category: 'Manpower', description: 'B1 engineer sick, night shift uncovered' },
+      });
+      expect(opened.statusCode).toBe(201);
+
+      const entry = await prisma.auditLog.findFirstOrThrow({ where: { entityType: 'Impediment' } });
+      expect(entry.action).toBe('impediment.opened');
+      expect(entry.summary).toContain('NAP');
+      expect(entry.summary).toContain('Manpower');
+      expect(entry.entityId).toBe(opened.json().impediment.id);
+    });
+
+    it('records resolving a station impediment', async () => {
+      const station = await createStation('BLQ', 'Bologna');
+      const opened = await app.inject({
+        method: 'POST',
+        url: `/api/stations/${station.code}/impediments`,
+        headers: auth(admin),
+        payload: { category: 'Tooling', description: 'Torque wrench out for calibration' },
+      });
+
+      await app.inject({
+        method: 'PATCH',
+        url: `/api/stations/impediments/${opened.json().impediment.id}`,
+        headers: auth(admin),
+        payload: { status: 'RESOLVED' },
+      });
+
+      const entry = await prisma.auditLog.findFirstOrThrow({
+        where: { entityType: 'Impediment', action: 'impediment.resolved' },
+      });
+      expect(entry.summary).toContain('OPEN → RESOLVED');
+      expect((entry.after as { status?: string }).status).toBe('RESOLVED');
+    });
   });
 
   describe('reading', () => {
