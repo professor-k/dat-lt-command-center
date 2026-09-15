@@ -68,6 +68,33 @@ const deferBody = z.object({
   note: z.string().trim().max(400).optional(),
 });
 
+/**
+ * An aircraft is held AOG for exactly as long as a no-go defect is open against it. Both
+ * directions are guarded on the status they expect, so they are idempotent, safe to call
+ * on every change, and never touch an airframe that is MAINTENANCE or STORED — those are
+ * someone's deliberate decision, not a consequence of the defect log.
+ */
+async function groundIfCritical(aircraftId: string): Promise<boolean> {
+  const { count } = await prisma.aircraft.updateMany({
+    where: { id: aircraftId, operationalStatus: 'ACTIVE' },
+    data: { operationalStatus: 'AOG' },
+  });
+  return count > 0;
+}
+
+async function releaseIfNoLongerGrounded(aircraftId: string): Promise<boolean> {
+  const blocking = await prisma.defect.count({
+    where: { aircraftId, status: { not: 'CLOSED' }, category: 'CRITICAL' },
+  });
+  if (blocking > 0) return false;
+
+  const { count } = await prisma.aircraft.updateMany({
+    where: { id: aircraftId, operationalStatus: 'AOG' },
+    data: { operationalStatus: 'ACTIVE' },
+  });
+  return count > 0;
+}
+
 async function nextReference() {
   const year = new Date().getFullYear();
   const count = await prisma.defect.count({ where: { reference: { startsWith: `DEF-${year}-` } } });
@@ -124,9 +151,7 @@ export async function defectRoutes(app: FastifyInstance) {
     });
 
     // A no-go defect grounds the aircraft immediately.
-    if (defect.category === 'CRITICAL' && aircraft.operationalStatus === 'ACTIVE') {
-      await prisma.aircraft.update({ where: { id: aircraft.id }, data: { operationalStatus: 'AOG' } });
-    }
+    const grounded = defect.category === 'CRITICAL' && (await groundIfCritical(aircraft.id));
 
     broadcast({ type: 'defect.created', payload: { id: defect.id, registration: defect.aircraft.registration } });
     await recordAudit(request, {
@@ -135,7 +160,7 @@ export async function defectRoutes(app: FastifyInstance) {
       entityId: defect.id,
       summary:
         `${defect.reference} raised on ${defect.aircraft.registration}: ${defect.title} (${defect.category})` +
-        (defect.category === 'CRITICAL' ? ' — aircraft grounded' : ''),
+        (grounded ? ' — aircraft grounded' : ''),
       after: { reference: defect.reference, category: defect.category, ataChapter: defect.ataChapter },
     });
     return reply.code(201).send({ defect });
@@ -183,15 +208,17 @@ export async function defectRoutes(app: FastifyInstance) {
       include: { aircraft: { select: { id: true, registration: true, operationalStatus: true } } },
     });
 
-    // Clearing the last critical defect releases the aircraft back to service.
-    if (closing) {
-      const blocking = await prisma.defect.count({
-        where: { aircraftId: defect.aircraftId, status: { not: 'CLOSED' }, category: 'CRITICAL' },
-      });
-      if (blocking === 0 && defect.aircraft.operationalStatus === 'AOG') {
-        await prisma.aircraft.update({ where: { id: defect.aircraftId }, data: { operationalStatus: 'ACTIVE' } });
-      }
-    }
+    // Whether an aircraft is grounded follows from the defects open against it, so it is
+    // reconciled after any change that can alter that — not only on close. Downgrading the
+    // last CRITICAL defect clears the reason for the AOG just as closing it does, and that
+    // is the documented first step before deferring one.
+    // Only this defect's own no-go status is acted on. An airframe set AOG by hand from the
+    // fleet board is somebody's decision about that aircraft, and editing an unrelated
+    // defect is no reason to overturn it.
+    const wasNoGo = existing.category === 'CRITICAL' && existing.status !== 'CLOSED';
+    const isNoGo = defect.category === 'CRITICAL' && defect.status !== 'CLOSED';
+    const grounded = !wasNoGo && isNoGo && (await groundIfCritical(defect.aircraftId));
+    const released = wasNoGo && !isNoGo && (await releaseIfNoLongerGrounded(defect.aircraftId));
 
     broadcast({ type: 'defect.updated', payload: { id: defect.id, status: defect.status } });
 
@@ -199,6 +226,8 @@ export async function defectRoutes(app: FastifyInstance) {
       existing.status !== defect.status ? `${existing.status} → ${defect.status}` : null,
       recategorised ? `category ${existing.category} → ${defect.category}` : null,
       undeferring ? 'deferral withdrawn' : null,
+      grounded ? 'aircraft grounded' : null,
+      released ? 'aircraft released to service' : null,
     ].filter(Boolean);
 
     await recordAudit(request, {

@@ -99,4 +99,103 @@ describe('AOG grounding', () => {
     const after = await prisma.aircraft.findUnique({ where: { id: aircraft.id } });
     expect(after?.operationalStatus).toBe('MAINTENANCE');
   });
+  it('releases the aircraft when the last CRITICAL defect is downgraded', async () => {
+    const aircraft = await createAircraft('LY-DWN');
+    const raised = await raise('LY-DWN', 'CRITICAL');
+    expect((await prisma.aircraft.findUnique({ where: { id: aircraft.id } }))?.operationalStatus).toBe('AOG');
+
+    // The documented first step before deferring a no-go defect: downgrade it. That clears
+    // the reason for the AOG just as closing it would.
+    const downgraded = await app.inject({
+      method: 'PATCH',
+      url: `/api/defects/${raised.json().defect.id}`,
+      headers: auth(token),
+      payload: { category: 'CAT_C' },
+    });
+    expect(downgraded.statusCode).toBe(200);
+
+    const after = await prisma.aircraft.findUnique({ where: { id: aircraft.id } });
+    expect(after?.operationalStatus).toBe('ACTIVE');
+  });
+
+  it('keeps the aircraft grounded when one of two CRITICAL defects is downgraded', async () => {
+    const aircraft = await createAircraft('LY-DW2');
+    const first = await raise('LY-DW2', 'CRITICAL');
+    await raise('LY-DW2', 'CRITICAL');
+
+    await app.inject({
+      method: 'PATCH',
+      url: `/api/defects/${first.json().defect.id}`,
+      headers: auth(token),
+      payload: { category: 'CAT_B' },
+    });
+
+    const after = await prisma.aircraft.findUnique({ where: { id: aircraft.id } });
+    expect(after?.operationalStatus).toBe('AOG');
+  });
+
+  it('grounds the aircraft when a defect is re-categorised up to CRITICAL', async () => {
+    const aircraft = await createAircraft('LY-UPG');
+    const raised = await raise('LY-UPG', 'CAT_C');
+    expect((await prisma.aircraft.findUnique({ where: { id: aircraft.id } }))?.operationalStatus).toBe('ACTIVE');
+
+    const upgraded = await app.inject({
+      method: 'PATCH',
+      url: `/api/defects/${raised.json().defect.id}`,
+      headers: auth(token),
+      payload: { category: 'CRITICAL' },
+    });
+    expect(upgraded.statusCode).toBe(200);
+
+    const after = await prisma.aircraft.findUnique({ where: { id: aircraft.id } });
+    expect(after?.operationalStatus).toBe('AOG');
+  });
+
+  it('does not release an aircraft that is in maintenance when a defect is downgraded', async () => {
+    const aircraft = await createAircraft('LY-MN2', { operationalStatus: 'MAINTENANCE' });
+    const defect = await createDefect(aircraft.id, { category: 'CRITICAL' });
+
+    await app.inject({
+      method: 'PATCH',
+      url: `/api/defects/${defect.id}`,
+      headers: auth(token),
+      payload: { category: 'CAT_C' },
+    });
+
+    const after = await prisma.aircraft.findUnique({ where: { id: aircraft.id } });
+    expect(after?.operationalStatus).toBe('MAINTENANCE');
+  });
+
+  it('leaves an aircraft grounded by hand alone when an unrelated defect is closed', async () => {
+    const aircraft = await createAircraft('LY-HND', { operationalStatus: 'AOG' });
+    const defect = await createDefect(aircraft.id, { category: 'CAT_C' });
+
+    await app.inject({
+      method: 'PATCH',
+      url: `/api/defects/${defect.id}`,
+      headers: auth(token),
+      payload: { status: 'CLOSED' },
+    });
+
+    const after = await prisma.aircraft.findUnique({ where: { id: aircraft.id } });
+    expect(after?.operationalStatus).toBe('AOG');
+  });
+
+  it('notes the release in the audit trail', async () => {
+    await createAircraft('LY-AUD');
+    const raised = await raise('LY-AUD', 'CRITICAL');
+
+    await app.inject({
+      method: 'PATCH',
+      url: `/api/defects/${raised.json().defect.id}`,
+      headers: auth(token),
+      payload: { category: 'CAT_C' },
+    });
+
+    const entry = await prisma.auditLog.findFirstOrThrow({
+      where: { entityType: 'Defect', action: 'defect.updated' },
+      orderBy: { createdAt: 'desc' },
+    });
+    expect(entry.summary).toContain('aircraft released to service');
+  });
 });
