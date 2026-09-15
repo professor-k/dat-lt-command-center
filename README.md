@@ -31,7 +31,8 @@ API, database and role-based access control.
 - **Station** — IATA code, network status, compliance/audit state, required action.
 - **Impediment** — what is blocking a station (consumables, manpower, tooling…).
 - **DefectHistory** — monthly counts that feed the year-end projection
-  (`actual-to-date + run-rate × remaining months`).
+  (`actual-to-date + run-rate × remaining months`). Maintained by hand from the
+  "Edit baseline" control on the projection card, not derived from the defect log.
 
 ## Roles
 
@@ -51,20 +52,42 @@ POST   /api/auth/users              (ADMIN)
 GET    /api/overview                KPI block: open/projected defects, top risk, availability
 GET    /api/fleet                   telemetry rows
 GET    /api/fleet/:registration     full technical record
+POST   /api/fleet                   (ENGINEER+) add an airframe
 PATCH  /api/fleet/:registration     (ENGINEER+) status / station / hours
+DELETE /api/fleet/:registration     (ADMIN) remove an airframe with no technical record
 GET    /api/defects                 ?status=&registration=&ataChapter=
 POST   /api/defects                 (ENGINEER+)
 PATCH  /api/defects/:id             (ENGINEER+) close / defer / reopen
 GET    /api/stations                network status + open impediments
 GET    /api/stations/:code
+POST   /api/stations                (ADMIN) open a station
 PATCH  /api/stations/:code          (ENGINEER+)
+DELETE /api/stations/:code          (ADMIN) close a station with no aircraft on it
 POST   /api/stations/:code/impediments   (ENGINEER+)
 PATCH  /api/stations/impediments/:id     (ENGINEER+)
 GET    /api/alerts                  predictive alerts
+POST   /api/alerts                  (ENGINEER+) raise a prediction
 PATCH  /api/alerts/:id              (ENGINEER+) acknowledge
+DELETE /api/alerts/:id              (ENGINEER+) withdraw a prediction
+GET    /api/history                 ?year= monthly defect baseline
+PUT    /api/history                 (ENGINEER+) upsert one month
+DELETE /api/history/:year/:month    (ENGINEER+) clear one month
 GET    /api/stream                  SSE change feed
 GET    /api/health                  liveness + DB check
 ```
+
+## Removal rules
+
+Nothing that carries a maintenance record can be deleted, because the technical log has
+to outlive the UI that renders it:
+
+| Action              | Refused when                              | Do this instead            |
+| ------------------- | ----------------------------------------- | -------------------------- |
+| Remove an aircraft  | it has any defect on file, open or closed | set it `STORED`            |
+| Close a station     | aircraft are still based there            | move them, then close      |
+| Withdraw an alert   | never — predictions are working estimates | —                          |
+
+Both refusals return `409` with a message naming what is in the way.
 
 ## Local development
 

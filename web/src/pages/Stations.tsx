@@ -18,7 +18,9 @@ import {
 export function StationsPage() {
   const { connected } = useOutletContext<{ connected: boolean }>();
   const { data, isLoading } = useStations();
+  const { can } = useAuth();
   const [selected, setSelected] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
 
   const stations = data?.stations ?? [];
   const station = stations.find((s) => s.code === selected) ?? null;
@@ -41,9 +43,15 @@ export function StationsPage() {
       <div className="table-container">
         <div className="panel-head">
           <h3>Italian Network Status</h3>
-          <span className="muted" style={{ fontSize: 12, letterSpacing: 1 }}>
-            Select a station to manage impediments
-          </span>
+          {can('ADMIN') ? (
+            <button className="btn gold" onClick={() => setAdding(true)}>
+              Open station
+            </button>
+          ) : (
+            <span className="muted" style={{ fontSize: 12, letterSpacing: 1 }}>
+              Select a station to manage impediments
+            </span>
+          )}
         </div>
 
         {isLoading ? (
@@ -89,6 +97,7 @@ export function StationsPage() {
       </div>
 
       {station ? <StationDrawer station={station} onClose={() => setSelected(null)} /> : null}
+      {adding ? <AddStationModal onClose={() => setAdding(false)} /> : null}
     </section>
   );
 }
@@ -97,7 +106,9 @@ function StationDrawer({ station, onClose }: { station: Station; onClose: () => 
   const { can } = useAuth();
   const queryClient = useQueryClient();
   const [adding, setAdding] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
   const editable = can('ADMIN', 'ENGINEER');
+  const removable = can('ADMIN');
 
   const refresh = () => {
     void queryClient.invalidateQueries({ queryKey: ['stations'] });
@@ -108,6 +119,16 @@ function StationDrawer({ station, onClose }: { station: Station; onClose: () => 
     mutationFn: (id: string) =>
       api(`/stations/impediments/${id}`, { method: 'PATCH', body: JSON.stringify({ status: 'RESOLVED' }) }),
     onSuccess: refresh,
+  });
+
+  const remove = useMutation({
+    mutationFn: () => api(`/stations/${station.code}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      refresh();
+      void queryClient.invalidateQueries({ queryKey: ['fleet'] });
+      onClose();
+    },
+    onError: (e: Error) => setRemoveError(e.message),
   });
 
   const setNetworkStatus = useMutation({
@@ -220,6 +241,22 @@ function StationDrawer({ station, onClose }: { station: Station; onClose: () => 
         )}
       </div>
 
+      {removable ? (
+        <div className="list-block">
+          <h4>Close Station</h4>
+          {removeError ? <p className="error-msg">{removeError}</p> : null}
+          <p className="muted" style={{ fontSize: 13, margin: '0 0 12px' }}>
+            Closing {station.code} removes it and its impediment log. Aircraft based here must be moved
+            to another station first.
+          </p>
+          <div className="record-actions">
+            <button className="btn small danger" disabled={remove.isPending} onClick={() => remove.mutate()}>
+              {remove.isPending ? 'Closing' : `Close ${station.code}`}
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       {adding ? <ImpedimentModal stationCode={station.code} onClose={() => setAdding(false)} onSaved={refresh} /> : null}
     </Drawer>
   );
@@ -284,6 +321,126 @@ function ImpedimentModal({
           onClick={() => create.mutate()}
         >
           {create.isPending ? 'Saving' : 'Log impediment'}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+const NETWORK_OPTIONS = ['OPTIMAL', 'DEGRADED', 'CRITICAL'] as const;
+const COMPLIANCE_OPTIONS = ['PASSED', 'PASSED_MINOR', 'PENDING_REVIEW', 'FAILED'] as const;
+
+function AddStationModal({ onClose }: { onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const [form, setForm] = useState({
+    code: '',
+    city: '',
+    country: 'Italy',
+    networkStatus: 'OPTIMAL' as Station['networkStatus'],
+    complianceStatus: 'PASSED' as Station['complianceStatus'],
+    requiredAction: '',
+  });
+  const [error, setError] = useState<string | null>(null);
+
+  const create = useMutation({
+    mutationFn: () =>
+      api('/stations', {
+        method: 'POST',
+        body: JSON.stringify({
+          code: form.code.trim().toUpperCase(),
+          city: form.city.trim(),
+          country: form.country.trim(),
+          networkStatus: form.networkStatus,
+          complianceStatus: form.complianceStatus,
+          requiredAction: form.requiredAction.trim() || null,
+        }),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['stations'] });
+      void queryClient.invalidateQueries({ queryKey: ['overview'] });
+      onClose();
+    },
+    onError: (e: Error) => setError(e.message),
+  });
+
+  const valid = /^[A-Za-z]{3}$/.test(form.code.trim()) && form.city.trim().length >= 2;
+
+  return (
+    <Modal title="Open line station" onClose={onClose}>
+      {error ? <p className="error-msg">{error}</p> : null}
+
+      <div className="field">
+        <label htmlFor="st-code">IATA Code</label>
+        <input
+          id="st-code"
+          value={form.code}
+          maxLength={3}
+          placeholder="MXP"
+          onChange={(e) => setForm({ ...form, code: e.target.value.toUpperCase() })}
+        />
+      </div>
+
+      <div className="field">
+        <label htmlFor="st-city">City</label>
+        <input
+          id="st-city"
+          value={form.city}
+          placeholder="Milan"
+          onChange={(e) => setForm({ ...form, city: e.target.value })}
+        />
+      </div>
+
+      <div className="field">
+        <label htmlFor="st-country">Country</label>
+        <input id="st-country" value={form.country} onChange={(e) => setForm({ ...form, country: e.target.value })} />
+      </div>
+
+      <div className="field">
+        <label htmlFor="st-network">Network Status</label>
+        <select
+          id="st-network"
+          value={form.networkStatus}
+          onChange={(e) => setForm({ ...form, networkStatus: e.target.value as Station['networkStatus'] })}
+        >
+          {NETWORK_OPTIONS.map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="field">
+        <label htmlFor="st-compliance">Compliance</label>
+        <select
+          id="st-compliance"
+          value={form.complianceStatus}
+          onChange={(e) => setForm({ ...form, complianceStatus: e.target.value as Station['complianceStatus'] })}
+        >
+          {COMPLIANCE_OPTIONS.map((c) => (
+            <option key={c} value={c}>
+              {COMPLIANCE_LABEL[c]}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="field">
+        <label htmlFor="st-action">Required Action</label>
+        <input
+          id="st-action"
+          value={form.requiredAction}
+          placeholder="Optional — e.g. Tooling Calibration"
+          onChange={(e) => setForm({ ...form, requiredAction: e.target.value })}
+        />
+      </div>
+
+      <div className="modal-actions">
+        <button className="btn ghost" onClick={onClose}>
+          Cancel
+        </button>
+        <button className="btn primary" disabled={!valid || create.isPending} onClick={() => create.mutate()}>
+          {create.isPending ? 'Opening' : 'Open station'}
         </button>
       </div>
     </Modal>

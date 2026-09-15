@@ -146,6 +146,12 @@ export interface Station {
   aircraft: { registration: string; model?: string; operationalStatus: OperationalStatus }[];
 }
 
+export interface DefectHistory {
+  year: number;
+  months: { month: number; count: number }[];
+  total: number;
+}
+
 export interface Overview {
   year: number;
   openDefects: number;

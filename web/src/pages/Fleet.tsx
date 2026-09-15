@@ -2,13 +2,14 @@ import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useOutletContext } from 'react-router-dom';
 import { api, type FleetRow, type OperationalStatus } from '../api';
-import { useAircraft, useFleet, useOverview } from '../hooks';
+import { useAircraft, useDefectHistory, useFleet, useOverview, useStations } from '../hooks';
 import { useAuth } from '../auth';
 import { LiveBadge } from '../components/Shell';
 import {
   CATEGORY_LABEL,
   CategoryTag,
   Drawer,
+  Modal,
   OperationalStatusCell,
   SeverityTag,
   TableSkeleton,
@@ -23,7 +24,11 @@ export function FleetPage() {
   const { connected } = useOutletContext<{ connected: boolean }>();
   const { data: overview, isLoading: overviewLoading } = useOverview();
   const { data: fleet, isLoading: fleetLoading } = useFleet();
+  const { can } = useAuth();
   const [selected, setSelected] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [editingBaseline, setEditingBaseline] = useState(false);
+  const editable = can('ADMIN', 'ENGINEER');
 
   const risk = overview?.criticalPredictiveRisk;
   const trend = overview?.defectTrend.filter((t) => t.count > 0) ?? [];
@@ -64,6 +69,11 @@ export function FleetPage() {
               <span key={t.month} style={{ height: `${(t.count / peak) * 100}%` }} />
             ))}
           </div>
+          {editable ? (
+            <button className="btn small ghost" style={{ marginTop: 14 }} onClick={() => setEditingBaseline(true)}>
+              Edit baseline
+            </button>
+          ) : null}
         </div>
 
         <div className={`stat-card${risk?.severity === 'CRITICAL' ? ' danger' : ''}`}>
@@ -92,9 +102,15 @@ export function FleetPage() {
       <div className="table-container">
         <div className="panel-head">
           <h3>Live Aircraft Telemetry</h3>
-          <span className="muted" style={{ fontSize: 12, letterSpacing: 1 }}>
-            Select an aircraft for the full technical record
-          </span>
+          {editable ? (
+            <button className="btn gold" onClick={() => setAdding(true)}>
+              Add aircraft
+            </button>
+          ) : (
+            <span className="muted" style={{ fontSize: 12, letterSpacing: 1 }}>
+              Select an aircraft for the full technical record
+            </span>
+          )}
         </div>
 
         {fleetLoading ? (
@@ -122,6 +138,10 @@ export function FleetPage() {
       </div>
 
       {selected ? <AircraftDrawer registration={selected} onClose={() => setSelected(null)} /> : null}
+      {adding ? <AddAircraftModal onClose={() => setAdding(false)} /> : null}
+      {editingBaseline ? (
+        <DefectBaselineModal year={overview?.year ?? new Date().getFullYear()} onClose={() => setEditingBaseline(false)} />
+      ) : null}
     </section>
   );
 }
@@ -155,9 +175,12 @@ function FleetTableRow({ row, onSelect }: { row: FleetRow; onSelect: () => void 
 
 function AircraftDrawer({ registration, onClose }: { registration: string; onClose: () => void }) {
   const { data, isLoading } = useAircraft(registration);
+  const { data: stations } = useStations();
   const { can } = useAuth();
   const queryClient = useQueryClient();
+  const [removeError, setRemoveError] = useState<string | null>(null);
   const editable = can('ADMIN', 'ENGINEER');
+  const removable = can('ADMIN');
 
   const setStatus = useMutation({
     mutationFn: (operationalStatus: OperationalStatus) =>
@@ -167,6 +190,27 @@ function AircraftDrawer({ registration, onClose }: { registration: string; onClo
       void queryClient.invalidateQueries({ queryKey: ['aircraft'] });
       void queryClient.invalidateQueries({ queryKey: ['overview'] });
     },
+  });
+
+  const move = useMutation({
+    mutationFn: (stationCode: string | null) =>
+      api(`/fleet/${registration}`, { method: 'PATCH', body: JSON.stringify({ stationCode }) }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['fleet'] });
+      void queryClient.invalidateQueries({ queryKey: ['aircraft'] });
+      void queryClient.invalidateQueries({ queryKey: ['stations'] });
+    },
+  });
+
+  const remove = useMutation({
+    mutationFn: () => api(`/fleet/${registration}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['fleet'] });
+      void queryClient.invalidateQueries({ queryKey: ['stations'] });
+      void queryClient.invalidateQueries({ queryKey: ['overview'] });
+      onClose();
+    },
+    onError: (e: Error) => setRemoveError(e.message),
   });
 
   const closeDefect = useMutation({
@@ -227,6 +271,23 @@ function AircraftDrawer({ registration, onClose }: { registration: string; onClo
                     {status}
                   </button>
                 ))}
+              </div>
+
+              <div className="field" style={{ marginTop: 18, marginBottom: 0 }}>
+                <label htmlFor="ac-station">Based At</label>
+                <select
+                  id="ac-station"
+                  value={aircraft.station?.code ?? ''}
+                  disabled={move.isPending}
+                  onChange={(e) => move.mutate(e.target.value || null)}
+                >
+                  <option value="">Unassigned</option>
+                  {stations?.stations.map((st) => (
+                    <option key={st.id} value={st.code}>
+                      {st.code} — {st.city}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
           ) : null}
@@ -292,8 +353,243 @@ function AircraftDrawer({ registration, onClose }: { registration: string; onClo
               ))
             )}
           </div>
+
+          {removable ? (
+            <div className="list-block">
+              <h4>Remove From Fleet</h4>
+              {removeError ? <p className="error-msg">{removeError}</p> : null}
+              <p className="muted" style={{ fontSize: 13, margin: '0 0 12px' }}>
+                Only an airframe with no technical record can be removed. Retire an aircraft that has
+                history by setting it <strong>STORED</strong> instead.
+              </p>
+              <div className="record-actions">
+                <button className="btn small danger" disabled={remove.isPending} onClick={() => remove.mutate()}>
+                  {remove.isPending ? 'Removing' : `Remove ${registration}`}
+                </button>
+              </div>
+            </div>
+          ) : null}
         </>
       )}
     </Drawer>
+  );
+}
+
+function AddAircraftModal({ onClose }: { onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const { data: stations } = useStations();
+  const [form, setForm] = useState({
+    registration: '',
+    model: 'ATR 72-600',
+    operationalStatus: 'ACTIVE' as OperationalStatus,
+    stationCode: '',
+    flightHours: '0',
+    cycles: '0',
+  });
+  const [error, setError] = useState<string | null>(null);
+
+  const create = useMutation({
+    mutationFn: () =>
+      api('/fleet', {
+        method: 'POST',
+        body: JSON.stringify({
+          registration: form.registration.trim().toUpperCase(),
+          model: form.model.trim(),
+          operationalStatus: form.operationalStatus,
+          ...(form.stationCode ? { stationCode: form.stationCode } : {}),
+          flightHours: Number(form.flightHours) || 0,
+          cycles: Number(form.cycles) || 0,
+        }),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['fleet'] });
+      void queryClient.invalidateQueries({ queryKey: ['stations'] });
+      void queryClient.invalidateQueries({ queryKey: ['overview'] });
+      onClose();
+    },
+    onError: (e: Error) => setError(e.message),
+  });
+
+  const valid = /^[A-Za-z0-9-]{3,10}$/.test(form.registration.trim()) && form.model.trim().length >= 2;
+
+  return (
+    <Modal title="Add aircraft to fleet" onClose={onClose}>
+      {error ? <p className="error-msg">{error}</p> : null}
+
+      <div className="field">
+        <label htmlFor="ac-reg">Registration</label>
+        <input
+          id="ac-reg"
+          value={form.registration}
+          maxLength={10}
+          placeholder="LY-DAT"
+          onChange={(e) => setForm({ ...form, registration: e.target.value.toUpperCase() })}
+        />
+      </div>
+
+      <div className="field">
+        <label htmlFor="ac-model">Type</label>
+        <input
+          id="ac-model"
+          value={form.model}
+          placeholder="ATR 72-600"
+          onChange={(e) => setForm({ ...form, model: e.target.value })}
+        />
+      </div>
+
+      <div className="field">
+        <label htmlFor="ac-base">Based At</label>
+        <select
+          id="ac-base"
+          value={form.stationCode}
+          onChange={(e) => setForm({ ...form, stationCode: e.target.value })}
+        >
+          <option value="">Unassigned</option>
+          {stations?.stations.map((st) => (
+            <option key={st.id} value={st.code}>
+              {st.code} — {st.city}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="field">
+        <label htmlFor="ac-status">Operational Status</label>
+        <select
+          id="ac-status"
+          value={form.operationalStatus}
+          onChange={(e) => setForm({ ...form, operationalStatus: e.target.value as OperationalStatus })}
+        >
+          {STATUS_OPTIONS.map((status) => (
+            <option key={status} value={status}>
+              {status}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="field">
+        <label htmlFor="ac-hours">Flight Hours</label>
+        <input
+          id="ac-hours"
+          type="number"
+          min={0}
+          step="0.1"
+          value={form.flightHours}
+          onChange={(e) => setForm({ ...form, flightHours: e.target.value })}
+        />
+      </div>
+
+      <div className="field">
+        <label htmlFor="ac-cycles">Cycles</label>
+        <input
+          id="ac-cycles"
+          type="number"
+          min={0}
+          step="1"
+          value={form.cycles}
+          onChange={(e) => setForm({ ...form, cycles: e.target.value })}
+        />
+      </div>
+
+      <div className="modal-actions">
+        <button className="btn ghost" onClick={onClose}>
+          Cancel
+        </button>
+        <button className="btn primary" disabled={!valid || create.isPending} onClick={() => create.mutate()}>
+          {create.isPending ? 'Adding' : 'Add aircraft'}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+const MONTH_LABEL = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * The monthly defect counts the year-end projection is built from. They are
+ * reference figures the reliability desk maintains, not something the defect
+ * log derives, so they are edited by hand here.
+ */
+function DefectBaselineModal({ year, onClose }: { year: number; onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const { data, isLoading } = useDefectHistory(year);
+  const [draft, setDraft] = useState<Record<number, string> | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const stored: Record<number, string> = {};
+  for (const m of data?.months ?? []) stored[m.month] = String(m.count);
+  const values = draft ?? stored;
+
+  const save = useMutation({
+    mutationFn: async () => {
+      const changed = MONTH_LABEL.map((_, i) => i + 1).filter(
+        (month) => (values[month] ?? '') !== (stored[month] ?? ''),
+      );
+      for (const month of changed) {
+        const raw = values[month] ?? '';
+        if (raw === '') {
+          await api(`/history/${year}/${month}`, { method: 'DELETE' });
+        } else {
+          await api('/history', {
+            method: 'PUT',
+            body: JSON.stringify({ year, month, count: Number(raw) }),
+          });
+        }
+      }
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['history'] });
+      void queryClient.invalidateQueries({ queryKey: ['overview'] });
+      onClose();
+    },
+    onError: (e: Error) => setError(e.message),
+  });
+
+  const total = MONTH_LABEL.reduce((sum, _, i) => sum + (Number(values[i + 1]) || 0), 0);
+
+  return (
+    <Modal title={`Defect baseline — ${year}`} onClose={onClose}>
+      {error ? <p className="error-msg">{error}</p> : null}
+      <p className="muted" style={{ fontSize: 13, margin: '0 0 18px' }}>
+        Monthly totals feeding the year-end projection. Leave a month blank to remove it.
+      </p>
+
+      {isLoading ? (
+        <TableSkeleton rows={4} />
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(96px, 1fr))', gap: 12 }}>
+          {MONTH_LABEL.map((label, i) => {
+            const month = i + 1;
+            return (
+              <div className="field" key={label} style={{ marginBottom: 0 }}>
+                <label htmlFor={`hist-${month}`}>{label}</label>
+                <input
+                  id={`hist-${month}`}
+                  type="number"
+                  min={0}
+                  step="1"
+                  value={values[month] ?? ''}
+                  onChange={(e) => setDraft({ ...values, [month]: e.target.value })}
+                />
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <p className="muted" style={{ fontSize: 13, marginTop: 18 }}>
+        Baseline total: <strong>{total}</strong>
+      </p>
+
+      <div className="modal-actions">
+        <button className="btn ghost" onClick={onClose}>
+          Cancel
+        </button>
+        <button className="btn primary" disabled={save.isPending || isLoading} onClick={() => save.mutate()}>
+          {save.isPending ? 'Saving' : 'Save baseline'}
+        </button>
+      </div>
+    </Modal>
   );
 }

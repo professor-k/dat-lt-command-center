@@ -16,6 +16,7 @@ import { defectRoutes } from './routes/defects.routes.js';
 import { stationRoutes } from './routes/stations.routes.js';
 import { alertRoutes } from './routes/alerts.routes.js';
 import { overviewRoutes } from './routes/overview.routes.js';
+import { historyRoutes } from './routes/history.routes.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // dist/index.js -> ../../web/dist
@@ -68,6 +69,7 @@ await app.register(fleetRoutes, { prefix: '/api/fleet' });
 await app.register(defectRoutes, { prefix: '/api/defects' });
 await app.register(stationRoutes, { prefix: '/api/stations' });
 await app.register(alertRoutes, { prefix: '/api/alerts' });
+await app.register(historyRoutes, { prefix: '/api/history' });
 
 // Serve the built SPA (production single-service deployment).
 if (existsSync(webDist)) {

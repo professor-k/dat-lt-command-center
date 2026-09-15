@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, getToken, type AircraftDetail, type Defect, type FleetRow, type Overview, type PredictiveAlert, type Station } from './api';
+import { api, getToken, type AircraftDetail, type Defect, type DefectHistory, type FleetRow, type Overview, type PredictiveAlert, type Station } from './api';
 
 export const useOverview = () =>
   useQuery({ queryKey: ['overview'], queryFn: () => api<Overview>('/overview') });
@@ -28,6 +28,12 @@ export const useDefects = (filters: { status?: string; registration?: string; at
   });
 };
 
+export const useDefectHistory = (year?: number) =>
+  useQuery({
+    queryKey: ['history', year ?? 'current'],
+    queryFn: () => api<DefectHistory>(`/history${year ? `?year=${year}` : ''}`),
+  });
+
 export const useAlerts = () =>
   useQuery({ queryKey: ['alerts'], queryFn: () => api<{ alerts: PredictiveAlert[] }>('/alerts') });
 
@@ -51,10 +57,17 @@ export function useLiveStream() {
     source.addEventListener('connected', () => setConnected(true));
     source.addEventListener('defect.created', refresh(['defects', 'fleet', 'overview']));
     source.addEventListener('defect.updated', refresh(['defects', 'fleet', 'overview', 'aircraft']));
+    source.addEventListener('aircraft.created', refresh(['fleet', 'overview', 'stations']));
     source.addEventListener('aircraft.updated', refresh(['fleet', 'overview', 'aircraft', 'stations']));
+    source.addEventListener('aircraft.deleted', refresh(['fleet', 'overview', 'aircraft', 'stations', 'alerts']));
+    source.addEventListener('station.created', refresh(['stations', 'overview']));
     source.addEventListener('station.updated', refresh(['stations', 'overview']));
+    source.addEventListener('station.deleted', refresh(['stations', 'overview', 'fleet']));
     source.addEventListener('impediment.updated', refresh(['stations', 'overview']));
+    source.addEventListener('alert.created', refresh(['alerts', 'fleet', 'overview']));
     source.addEventListener('alert.updated', refresh(['alerts', 'fleet', 'overview']));
+    source.addEventListener('alert.deleted', refresh(['alerts', 'fleet', 'overview', 'aircraft']));
+    source.addEventListener('history.updated', refresh(['history', 'overview']));
     source.onerror = () => setConnected(false);
 
     return () => source.close();

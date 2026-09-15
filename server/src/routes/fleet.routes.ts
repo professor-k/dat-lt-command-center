@@ -4,9 +4,27 @@ import { prisma } from '../db.js';
 import { authenticate, requireRole } from '../auth.js';
 import { broadcast } from '../events.js';
 
+/** Registrations are stored upper-case: letters, digits and hyphens (LY-DAT). */
+const registrationField = z
+  .string()
+  .trim()
+  .min(3)
+  .max(10)
+  .regex(/^[A-Za-z0-9-]+$/, 'Registration may contain letters, digits and hyphens only');
+
+const createAircraft = z.object({
+  registration: registrationField,
+  model: z.string().trim().min(2).max(40).default('ATR 72-600'),
+  operationalStatus: z.enum(['ACTIVE', 'AOG', 'MAINTENANCE', 'STORED']).default('ACTIVE'),
+  stationCode: z.string().length(3).optional(),
+  flightHours: z.number().nonnegative().default(0),
+  cycles: z.number().int().nonnegative().default(0),
+});
+
 const patchAircraft = z.object({
   operationalStatus: z.enum(['ACTIVE', 'AOG', 'MAINTENANCE', 'STORED']).optional(),
-  stationCode: z.string().length(3).optional(),
+  // null unassigns the airframe from the network.
+  stationCode: z.string().length(3).nullable().optional(),
   flightHours: z.number().nonnegative().optional(),
   cycles: z.number().int().nonnegative().optional(),
 });
@@ -73,6 +91,33 @@ export async function fleetRoutes(app: FastifyInstance) {
     return { aircraft };
   });
 
+  app.post('/', { preHandler: requireRole('ADMIN', 'ENGINEER') }, async (request, reply) => {
+    const parsed = createAircraft.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: 'BadRequest', issues: parsed.error.issues });
+
+    const { registration, stationCode, ...rest } = parsed.data;
+    const reg = registration.toUpperCase();
+
+    const exists = await prisma.aircraft.findUnique({ where: { registration: reg } });
+    if (exists) return reply.code(409).send({ error: 'Conflict', message: `${reg} is already on the fleet` });
+
+    let stationId: string | undefined;
+    if (stationCode) {
+      const station = await prisma.station.findUnique({ where: { code: stationCode.toUpperCase() } });
+      if (!station) return reply.code(400).send({ error: 'BadRequest', message: 'Unknown station code' });
+      stationId = station.id;
+    }
+
+    const aircraft = await prisma.aircraft.create({
+      data: { ...rest, registration: reg, ...(stationId ? { stationId } : {}) },
+      include,
+    });
+
+    const row = toTelemetryRow(aircraft);
+    broadcast({ type: 'aircraft.created', payload: row });
+    return reply.code(201).send({ aircraft: row });
+  });
+
   app.patch(
     '/:registration',
     { preHandler: requireRole('ADMIN', 'ENGINEER') },
@@ -82,8 +127,10 @@ export async function fleetRoutes(app: FastifyInstance) {
       if (!parsed.success) return reply.code(400).send({ error: 'BadRequest', issues: parsed.error.issues });
 
       const { stationCode, ...rest } = parsed.data;
-      let stationId: string | undefined;
-      if (stationCode) {
+      let stationId: string | null | undefined;
+      if (stationCode === null) {
+        stationId = null;
+      } else if (stationCode) {
         const station = await prisma.station.findUnique({ where: { code: stationCode.toUpperCase() } });
         if (!station) return reply.code(400).send({ error: 'BadRequest', message: 'Unknown station code' });
         stationId = station.id;
@@ -94,7 +141,7 @@ export async function fleetRoutes(app: FastifyInstance) {
 
       const aircraft = await prisma.aircraft.update({
         where: { id: existing.id },
-        data: { ...rest, ...(stationId ? { stationId } : {}) },
+        data: { ...rest, ...(stationId !== undefined ? { stationId } : {}) },
         include,
       });
 
@@ -103,4 +150,29 @@ export async function fleetRoutes(app: FastifyInstance) {
       return { aircraft: row };
     },
   );
+
+  /**
+   * Removes an airframe from the fleet. Defects cascade, so an aircraft carrying
+   * any technical record is refused: the maintenance log must outlive the UI.
+   * Retiring a real airframe is a status change to STORED, not a deletion.
+   */
+  app.delete('/:registration', { preHandler: requireRole('ADMIN') }, async (request, reply) => {
+    const { registration } = request.params as { registration: string };
+    const existing = await prisma.aircraft.findUnique({
+      where: { registration: registration.toUpperCase() },
+      include: { _count: { select: { defects: true } } },
+    });
+    if (!existing) return reply.code(404).send({ error: 'NotFound', message: 'Aircraft not found' });
+
+    if (existing._count.defects > 0) {
+      return reply.code(409).send({
+        error: 'Conflict',
+        message: `${existing.registration} holds ${existing._count.defects} technical record(s); set it STORED instead of deleting it`,
+      });
+    }
+
+    await prisma.aircraft.delete({ where: { id: existing.id } });
+    broadcast({ type: 'aircraft.deleted', payload: { registration: existing.registration } });
+    return reply.code(204).send();
+  });
 }

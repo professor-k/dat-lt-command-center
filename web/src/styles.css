@@ -554,6 +554,16 @@ tbody tr.clickable {
   background: transparent;
 }
 
+.btn.danger {
+  border-color: rgba(255, 23, 68, 0.4);
+  color: var(--status-aog);
+}
+
+.btn.danger:hover:not(:disabled) {
+  border-color: var(--status-aog);
+  background: rgba(255, 23, 68, 0.12);
+}
+
 .btn.small {
   padding: 8px 14px;
   font-size: 11px;
