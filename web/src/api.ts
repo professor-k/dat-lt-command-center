@@ -26,6 +26,9 @@ export class ApiError extends Error {
   }
 }
 
+/** Endpoints where a 401 is an answer about the credentials supplied, not a dead session. */
+const CREDENTIAL_ENDPOINTS = ['/auth/login'];
+
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getToken();
   const response = await fetch(`/api${path}`, {
@@ -37,7 +40,12 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     },
   });
 
-  if (response.status === 401) {
+  // A 401 normally means the session has gone — expired, signed out, or the account
+  // deactivated or demoted out from under it — so it drops the token and sends everyone
+  // back to the sign-in screen. Signing in is the exception: there a 401 is the verdict on
+  // the credentials just typed, and reporting that as an expired session would be both
+  // wrong and baffling to someone who has simply mistyped their password.
+  if (response.status === 401 && !CREDENTIAL_ENDPOINTS.some((endpoint) => path.startsWith(endpoint))) {
     setToken(null);
     window.dispatchEvent(new CustomEvent('datlt:unauthorized'));
     throw new ApiError('Session expired', 401);

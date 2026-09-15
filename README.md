@@ -194,12 +194,18 @@ npm test                   # both
 ```
 
 Unit tests cover the year-end projection, the MEL rectification windows, the predictive
-ranking, and the date helpers the UI renders deadlines with.
+ranking, the date helpers the UI renders deadlines with, and the environment rules that stop
+a production boot on the demo credentials.
+
+`npm run test:unit` also runs the web suite, which renders pages against a stubbed API in
+jsdom: what each role is offered, the defect actions and the deferral form, the Access
+Control guards, sign-in and password reset, and how the API client treats a 401.
 
 Integration tests drive the app through `app.inject()` — no socket is bound — against a real
 database, because the rules worth protecting are the ones only a real database enforces:
-grounding on a CRITICAL defect and release on closing the last one, both removal refusals,
-and the role guards. They need a PostgreSQL with the schema applied:
+grounding on a CRITICAL defect and release on closing or downgrading the last one, both
+removal refusals, the role guards, session revocation, reference allocation under
+concurrency, and the MEL paperwork a deferral cannot be had without. They need a PostgreSQL with the schema applied:
 
 ```bash
 docker run -d --name datlt-test -e POSTGRES_PASSWORD=devpass \
