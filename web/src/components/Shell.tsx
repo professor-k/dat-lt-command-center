@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useMutation } from '@tanstack/react-query';
-import { api, type Role } from '../api';
+import { api, setToken, type Role } from '../api';
 import { useAuth } from '../auth';
 import { Modal } from './ui';
 import { useLiveStream, useOverview } from '../hooks';
@@ -96,13 +96,18 @@ function ChangePasswordModal({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
 
+  // Changing the password signs every session out, this one included, so the server hands
+  // back a replacement token. Storing it is what keeps this device signed in.
   const change = useMutation({
     mutationFn: () =>
-      api('/auth/password', {
+      api<{ token: string }>('/auth/password', {
         method: 'POST',
         body: JSON.stringify({ currentPassword: form.currentPassword, newPassword: form.newPassword }),
       }),
-    onSuccess: () => setDone(true),
+    onSuccess: ({ token }) => {
+      setToken(token);
+      setDone(true);
+    },
     onError: (e: Error) => setError(e.message),
   });
 
@@ -113,8 +118,8 @@ function ChangePasswordModal({ onClose }: { onClose: () => void }) {
     return (
       <Modal title="Password changed" onClose={onClose}>
         <p className="muted" style={{ fontSize: 13 }}>
-          Your password has been updated. It applies the next time you sign in — this session stays
-          active.
+          Your password has been updated. This device stays signed in; anywhere else you were
+          signed in has been signed out.
         </p>
         <div className="modal-actions">
           <button className="btn primary" onClick={onClose}>

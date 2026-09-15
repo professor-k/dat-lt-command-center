@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import type { Role } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { prisma } from '../db.js';
@@ -48,7 +49,18 @@ const publicUser = {
 /** Hashing cost, matching the seed. Deliberately slow. */
 const BCRYPT_COST = 10;
 
+/** How long a session lasts before it has to be refreshed or re-established. */
+const SESSION_TTL = '12h';
+
 export async function authRoutes(app: FastifyInstance) {
+  // `issuedAtMs` is the session's own timestamp, carried because the standard `iat` claim
+  // is only accurate to the second — too coarse for `sessionsValidFrom` to revoke against.
+  const signSession = (user: { id: string; email: string; name: string; role: Role }) =>
+    app.jwt.sign(
+      { sub: user.id, email: user.email, name: user.name, role: user.role, issuedAtMs: Date.now() },
+      { expiresIn: SESSION_TTL },
+    );
+
   app.post('/login', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
     const parsed = loginBody.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'BadRequest', message: 'Email and password required' });
@@ -67,10 +79,7 @@ export async function authRoutes(app: FastifyInstance) {
 
     await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
 
-    const token = app.jwt.sign(
-      { sub: user.id, email: user.email, name: user.name, role: user.role },
-      { expiresIn: '12h' },
-    );
+    const token = signSession(user);
     return { token, user: { id: user.id, email: user.email, name: user.name, role: user.role } };
   });
 
@@ -82,7 +91,13 @@ export async function authRoutes(app: FastifyInstance) {
     return { user };
   });
 
-  /** Anyone may rotate their own password, and must prove the current one to do it. */
+  /**
+   * Anyone may rotate their own password, and must prove the current one to do it.
+   *
+   * Changing the password signs every session out, which includes the one making the
+   * request — so a fresh token comes back with the response. The device doing the work
+   * stays signed in; anyone holding a token for this account elsewhere does not.
+   */
   app.post('/password', { preHandler: authenticate }, async (request, reply) => {
     const parsed = changePasswordBody.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'BadRequest', issues: parsed.error.issues });
@@ -96,9 +111,31 @@ export async function authRoutes(app: FastifyInstance) {
 
     await prisma.user.update({
       where: { id: user.id },
-      data: { passwordHash: await bcrypt.hash(parsed.data.newPassword, BCRYPT_COST) },
+      data: {
+        passwordHash: await bcrypt.hash(parsed.data.newPassword, BCRYPT_COST),
+        sessionsValidFrom: new Date(),
+      },
+    });
+    return { token: signSession(user) };
+  });
+
+  /** Signs this account out everywhere by invalidating every token issued so far. */
+  app.post('/logout', { preHandler: authenticate }, async (request, reply) => {
+    await prisma.user.update({
+      where: { id: request.user.sub },
+      data: { sessionsValidFrom: new Date() },
     });
     return reply.code(204).send();
+  });
+
+  /**
+   * Extends a still-valid session. A twelve-hour token handed out at the start of a shift
+   * would otherwise expire in the middle of one; the client renews in the background.
+   * A session that has been revoked cannot renew — `authenticate` has already refused it.
+   */
+  app.post('/refresh', { preHandler: authenticate }, async (request) => {
+    const { sub, email, name, role } = request.user;
+    return { token: signSession({ id: sub, email, name, role }) };
   });
 
   app.get('/users', { preHandler: [authenticate, requireRole('ADMIN')] }, async () => {
@@ -204,9 +241,14 @@ export async function authRoutes(app: FastifyInstance) {
     const existing = await prisma.user.findUnique({ where: { id } });
     if (!existing) return reply.code(404).send({ error: 'NotFound', message: 'User not found' });
 
+    // A reset exists to take an account back from whoever is holding it, so it signs the
+    // account out everywhere rather than leaving live sessions running on the old password.
     await prisma.user.update({
       where: { id },
-      data: { passwordHash: await bcrypt.hash(parsed.data.newPassword, BCRYPT_COST) },
+      data: {
+        passwordHash: await bcrypt.hash(parsed.data.newPassword, BCRYPT_COST),
+        sessionsValidFrom: new Date(),
+      },
     });
 
     broadcast({ type: 'user.updated', payload: { id, passwordReset: true } });

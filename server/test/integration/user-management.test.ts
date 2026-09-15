@@ -202,7 +202,10 @@ describe('user management', () => {
         headers: auth(token),
         payload: { currentPassword: 'TestPassword123!', newPassword: 'BrandNewPass456!' },
       });
-      expect(changed.statusCode).toBe(204);
+      // A replacement token comes back, because the change signs every session out and the
+      // caller's is one of them. Revocation itself is covered in session-revocation.test.ts.
+      expect(changed.statusCode).toBe(200);
+      expect(changed.json().token).toEqual(expect.any(String));
 
       expect((await login(viewer.email, 'TestPassword123!')).statusCode).toBe(401);
       expect((await login(viewer.email, 'BrandNewPass456!')).statusCode).toBe(200);

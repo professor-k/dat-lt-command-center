@@ -71,6 +71,9 @@ model User {
   // Accounts are deactivated, never deleted: defects point at the user who raised and
   // closed them, and that attribution has to outlive someone leaving the company.
   active       Boolean  @default(true)
+  // Sessions issued before this moment are refused. Bumped when the password changes, on
+  // an admin reset, and on sign-out, so revoking access does not mean waiting out a token.
+  sessionsValidFrom DateTime?
   lastLoginAt  DateTime?
   createdAt    DateTime @default(now())
 

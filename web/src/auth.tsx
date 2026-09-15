@@ -11,11 +11,17 @@ interface AuthState {
 
 const AuthContext = createContext<AuthState | null>(null);
 
+/** Well inside the twelve-hour session, so a renewal can fail a few times harmlessly. */
+const REFRESH_INTERVAL_MS = 60 * 60 * 1000;
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [ready, setReady] = useState(false);
 
   const logout = useCallback(() => {
+    // Best effort: the server invalidates every token for this account, but a failed call
+    // must not strand someone in a session they asked to leave.
+    void api('/auth/logout', { method: 'POST' }).catch(() => {});
     setToken(null);
     setUser(null);
   }, []);
@@ -37,6 +43,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .catch(() => setToken(null))
       .finally(() => setReady(true));
   }, []);
+
+  /**
+   * A session is good for twelve hours, which is shorter than the shifts this board is
+   * watched across, so it is renewed in the background rather than expiring under someone
+   * mid-task. A renewal that fails is not worth acting on — the next API call will get the
+   * 401 and route to the login screen.
+   */
+  useEffect(() => {
+    if (!user) return;
+
+    const renew = () => {
+      if (!getToken()) return;
+      void api<{ token: string }>('/auth/refresh', { method: 'POST' })
+        .then(({ token }) => setToken(token))
+        .catch(() => {});
+    };
+
+    const timer = setInterval(renew, REFRESH_INTERVAL_MS);
+    window.addEventListener('focus', renew);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', renew);
+    };
+  }, [user]);
 
   const login = useCallback(async (email: string, password: string) => {
     const result = await api<{ token: string; user: User }>('/auth/login', {
