@@ -104,6 +104,33 @@ export async function buildApp({ logger = true, rateLimiting = true }: BuildAppO
     await app.register(rateLimit, { max: 300, timeWindow: '1 minute', keyGenerator: accountOrAddress });
   }
 
+  /**
+   * Reads an empty `application/json` body as no body at all, which is what it is.
+   *
+   * Fastify's default refuses one outright, and does so before the route runs, so a POST
+   * that legitimately carries nothing — signing out, renewing a session, taking a stream
+   * ticket — fails with a 400 about content types rather than reaching the endpoint. A
+   * client that sends no `Content-Type` at all has always been fine, so the header alone
+   * should not decide it. Malformed JSON is still a 400; only the empty case is forgiven.
+   */
+  app.addContentTypeParser<string>(
+    'application/json',
+    { parseAs: 'string' },
+    (_request, body, done) => {
+      if (body.trim() === '') return done(null, undefined);
+      try {
+        done(null, JSON.parse(body));
+      } catch {
+        const err = new Error('Body is not valid JSON') as FastifyError;
+        // The handler below answers a 4xx with `error.name`, and every refusal this API
+        // makes is shaped `{ error: 'BadRequest', message }`.
+        err.name = 'BadRequest';
+        err.statusCode = 400;
+        done(err, undefined);
+      }
+    },
+  );
+
   // The SPA loads its typeface from Google Fonts; everything else is same-origin, and the
   // event stream is a same-origin connect. `frame-ancestors` keeps the board out of an
   // iframe on someone else's page, where it could be clickjacked into a state change.

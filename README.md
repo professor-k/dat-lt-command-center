@@ -95,6 +95,10 @@ Unhandled errors return a short reference and nothing else. Every expected failu
 answered by the route that knows about it, so anything reaching the error handler is a bug,
 and the detail belongs in the log rather than on the wire.
 
+An empty `application/json` body is read as no body at all rather than refused, so a POST
+that legitimately carries nothing — `logout`, `refresh`, `stream-ticket` — is answered by its
+route instead of by the body parser. Malformed JSON is still a `400`.
+
 ### Capacity
 
 Sized for a line maintenance team, not a public service. On a small single instance, expect
