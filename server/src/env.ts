@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import { DEMO_ADMIN_EMAIL, DEMO_ADMIN_PASSWORD } from './demo-credentials.js';
 
 // Local development keeps its configuration in server/.env. Neither tsx nor node
 // reads that file on its own, so load it here before validating. Variables already
@@ -11,10 +12,6 @@ import { z } from 'zod';
 const envFile = join(dirname(fileURLToPath(import.meta.url)), '../.env');
 if (existsSync(envFile)) process.loadEnvFile(envFile);
 
-/** The demo account, for local development only — see the production refinement below. */
-const DEMO_ADMIN_EMAIL = 'ops@dat-lt.aero';
-const DEMO_ADMIN_PASSWORD = 'CommandCenter2026!';
-
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().default(8080),
@@ -23,6 +20,9 @@ const schema = z.object({
   JWT_SECRET: z.string().min(16, 'JWT_SECRET must be at least 16 characters'),
   // Comma separated list of extra allowed browser origins (the SPA is same-origin in prod).
   CORS_ORIGINS: z.string().optional(),
+  // Only read when the seed actually creates the first administrator; seed.ts refuses the
+  // published demo defaults there rather than here, where it cannot tell whether a
+  // credential is about to be used or the database was seeded months ago.
   SEED_ADMIN_EMAIL: z.string().email().default(DEMO_ADMIN_EMAIL),
   SEED_ADMIN_PASSWORD: z.string().min(8).default(DEMO_ADMIN_PASSWORD),
   // How a self-service password reset is delivered. 'none' turns the feature off and leaves
@@ -33,29 +33,7 @@ const schema = z.object({
   PUBLIC_URL: z.string().url().optional(),
 });
 
-/**
- * The demo credentials are published in the README, which is fine for a machine on
- * somebody's desk and not fine for a deployment. A production boot has to name its own
- * first administrator rather than fall back to a password anyone can look up.
- */
-export const envSchema = schema.superRefine((config, ctx) => {
-  if (config.NODE_ENV !== 'production') return;
-
-  for (const [key, demo] of [
-    ['SEED_ADMIN_EMAIL', DEMO_ADMIN_EMAIL],
-    ['SEED_ADMIN_PASSWORD', DEMO_ADMIN_PASSWORD],
-  ] as const) {
-    if (config[key] === demo) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: [key],
-        message: `must be set in production — the default is the published demo credential`,
-      });
-    }
-  }
-});
-
-const parsed = envSchema.safeParse(process.env);
+const parsed = schema.safeParse(process.env);
 
 if (!parsed.success) {
   const issues = parsed.error.issues.map((i) => `  - ${i.path.join('.')}: ${i.message}`).join('\n');

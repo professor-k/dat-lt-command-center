@@ -5,8 +5,13 @@
  */
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import { DEMO_ADMIN_EMAIL, DEMO_ADMIN_PASSWORD, isPublishedDemoCredential } from './demo-credentials.js';
 
 const prisma = new PrismaClient();
+
+// Read directly rather than through env.ts: the seed runs as its own process before the
+// API boots, and needs no more configuration than the database it is writing to.
+const isProduction = process.env.NODE_ENV === 'production';
 
 const YEAR = new Date().getFullYear();
 const days = (n: number) => new Date(Date.now() + n * 86_400_000);
@@ -117,8 +122,21 @@ async function main() {
     }
   }
 
-  const adminEmail = (process.env.SEED_ADMIN_EMAIL ?? 'ops@dat-lt.aero').toLowerCase();
-  const adminPassword = process.env.SEED_ADMIN_PASSWORD ?? 'CommandCenter2026!';
+  const adminEmail = (process.env.SEED_ADMIN_EMAIL ?? DEMO_ADMIN_EMAIL).toLowerCase();
+  const adminPassword = process.env.SEED_ADMIN_PASSWORD ?? DEMO_ADMIN_PASSWORD;
+
+  // Past the early return above, this run is genuinely about to create the first
+  // administrator — so this is the one moment where the published demo password would
+  // become a real deployment's way in. Refused here rather than at boot, because only here
+  // is it known that the credential is about to be used: a deployment seeded months ago
+  // never reads these variables, and failing its boot over them would be noise.
+  if (isProduction && isPublishedDemoCredential(adminPassword)) {
+    throw new Error(
+      'Refusing to seed a production database with the published demo administrator password.\n' +
+        'Set SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD to credentials of your own, or set\n' +
+        'SEED_ON_BOOT=false and create the first account another way.',
+    );
+  }
 
   const users = [
     { email: adminEmail, name: 'Operations Control', role: 'ADMIN' as const, passwordHash: await bcrypt.hash(adminPassword, 10) },

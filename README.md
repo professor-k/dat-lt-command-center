@@ -194,8 +194,7 @@ npm test                   # both
 ```
 
 Unit tests cover the year-end projection, the MEL rectification windows, the predictive
-ranking, the date helpers the UI renders deadlines with, and the environment rules that stop
-a production boot on the demo credentials.
+ranking, and the date helpers the UI renders deadlines with.
 
 `npm run test:unit` also runs the web suite, which renders pages against a stubbed API in
 jsdom: what each role is offered, the defect actions and the deferral form, the Access
@@ -205,7 +204,8 @@ Integration tests drive the app through `app.inject()` — no socket is bound �
 database, because the rules worth protecting are the ones only a real database enforces:
 grounding on a CRITICAL defect and release on closing or downgrading the last one, both
 removal refusals, the role guards, session revocation, reference allocation under
-concurrency, and the MEL paperwork a deferral cannot be had without. They need a PostgreSQL with the schema applied:
+concurrency, the MEL paperwork a deferral cannot be had without, and the seed refusing to
+give a production database the published demo administrator. They need a PostgreSQL with the schema applied:
 
 ```bash
 docker run -d --name datlt-test -e POSTGRES_PASSWORD=devpass \
@@ -227,10 +227,14 @@ typecheck, both test layers, then the build — against a `postgres:16` service 
 | `viewer@dat-lt.aero`    | `FleetView2026!`     | VIEWER   |
 
 These are printed here, so they are not credentials — they are a convenience for a database
-on your own machine, and the sign-in screen only offers them in a development build. A
-production boot **refuses to start** on them: set `SEED_ADMIN_EMAIL` and
-`SEED_ADMIN_PASSWORD` to something of your own first. The demo engineer and viewer accounts
-can be deactivated from Access Control once real people have accounts.
+on your own machine, and the sign-in screen only offers them in a development build.
+
+The seed **refuses to create them on a production database**: set `SEED_ADMIN_EMAIL` and
+`SEED_ADMIN_PASSWORD` to something of your own first, or `SEED_ON_BOOT=false` and create the
+first account another way. The refusal is raised where the credential would be used, not at
+boot, so a deployment that was seeded long ago — where the seed skips and never reads those
+variables — keeps starting normally. The demo engineer and viewer accounts can be
+deactivated from Access Control once real people have accounts.
 
 ## Deployment
 
