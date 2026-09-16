@@ -42,6 +42,31 @@ describe('api client', () => {
     expect(headers.Authorization).toBeUndefined();
   });
 
+  /**
+   * Announcing a JSON body and sending none is refused by Fastify with a 400 before the
+   * route runs, which silently broke the stream ticket, the session renewal and signing
+   * out — all three are POSTs that carry nothing.
+   */
+  it('declares a JSON body only when it is sending one', async () => {
+    const fetchMock = respond(200, {});
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api('/auth/stream-ticket', { method: 'POST' });
+
+    const [, init = {}] = fetchMock.mock.calls[0]!;
+    expect((init.headers as Record<string, string>)['Content-Type']).toBeUndefined();
+  });
+
+  it('declares a JSON body when there is one', async () => {
+    const fetchMock = respond(200, {});
+    vi.stubGlobal('fetch', fetchMock);
+
+    await api('/defects', { method: 'POST', body: JSON.stringify({ ataChapter: '36' }) });
+
+    const [, init = {}] = fetchMock.mock.calls[0]!;
+    expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
+  });
+
   it('returns nothing for a 204', async () => {
     vi.stubGlobal('fetch', respond(204));
     expect(await api('/auth/logout', { method: 'POST' })).toBeUndefined();

@@ -34,7 +34,11 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`/api${path}`, {
     ...init,
     headers: {
-      'Content-Type': 'application/json',
+      // Only when something is actually being sent. Announcing a JSON body and then sending
+      // none is refused by Fastify with a 400 before the route is reached, which silently
+      // broke every POST that carries no payload — the stream ticket, the session renewal,
+      // and signing out.
+      ...(init.body === undefined || init.body === null ? {} : { 'Content-Type': 'application/json' }),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(init.headers ?? {}),
     },
