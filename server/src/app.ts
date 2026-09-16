@@ -1,7 +1,8 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
-import Fastify, { type FastifyInstance } from 'fastify';
+import { randomUUID } from 'node:crypto';
+import Fastify, { type FastifyError, type FastifyInstance, type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
 import rateLimit from '@fastify/rate-limit';
@@ -34,6 +35,29 @@ export interface BuildAppOptions {
    * The throttle itself is covered by a test that builds an app with it enabled.
    */
   rateLimiting?: boolean;
+}
+
+/**
+ * Keys the throttle on the account making the request, falling back to the network address
+ * for anything unauthenticated.
+ *
+ * Keying on the address alone is wrong for an internal tool: a station office reaches the
+ * internet through one public IP, so a whole shift would share a single 300/minute budget
+ * and throttle each other out at about seven requests a minute each. The token is verified
+ * rather than merely decoded, so a forged `sub` cannot be used to spend someone else's
+ * budget.
+ */
+export function accountOrAddress(request: FastifyRequest): string {
+  const header = request.headers.authorization;
+  if (header?.startsWith('Bearer ')) {
+    try {
+      const claims = request.server.jwt.verify<{ sub: string }>(header.slice(7));
+      if (claims.sub) return `account:${claims.sub}`;
+    } catch {
+      // Not a usable token; fall through and throttle by address like any other stranger.
+    }
+  }
+  return `address:${request.ip}`;
 }
 
 /**
@@ -71,8 +95,58 @@ export async function buildApp({ logger = true, rateLimiting = true }: BuildAppO
     origin: env.CORS_ORIGINS ? env.CORS_ORIGINS.split(',').map((o) => o.trim()) : !isProd,
     credentials: true,
   });
-  if (rateLimiting) await app.register(rateLimit, { max: 300, timeWindow: '1 minute' });
+  // Registered before the throttle, which verifies bearer tokens to key on the account.
   await app.register(jwt, { secret: env.JWT_SECRET });
+  // Left on the default onRequest hook so a flood is turned away before it reaches
+  // authentication, rather than after. /login attaches a second, narrower limiter of its
+  // own as a preHandler, where the body it keys on has been parsed.
+  if (rateLimiting) {
+    await app.register(rateLimit, { max: 300, timeWindow: '1 minute', keyGenerator: accountOrAddress });
+  }
+
+  // The SPA loads its typeface from Google Fonts; everything else is same-origin, and the
+  // event stream is a same-origin connect. `frame-ancestors` keeps the board out of an
+  // iframe on someone else's page, where it could be clickjacked into a state change.
+  const csp = [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data:",
+    "connect-src 'self'",
+    "base-uri 'self'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+  ].join('; ');
+
+  app.addHook('onSend', async (_request, reply) => {
+    reply.header('Content-Security-Policy', csp);
+    reply.header('X-Content-Type-Options', 'nosniff');
+    reply.header('Referrer-Policy', 'no-referrer');
+    reply.header('X-Frame-Options', 'DENY');
+    if (isProd) reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  });
+
+  /**
+   * Anything that reaches here is a bug rather than a refusal: the routes answer every
+   * expected failure themselves with a status and a message. Fastify's default would put
+   * `err.message` in the response, which for an unhandled Prisma error means constraint and
+   * column names on the wire, so the detail is logged and the caller gets a reference to
+   * quote instead. Errors that carry a 4xx of their own — body parsing, the throttle — are
+   * answers to the request and pass through as they are.
+   */
+  app.setErrorHandler((error: FastifyError, request, reply) => {
+    const status = error.statusCode ?? 500;
+    if (status < 500) return reply.code(status).send({ error: error.name, message: error.message });
+
+    const reference = randomUUID().slice(0, 8);
+    request.log.error({ err: error, reference }, 'Unhandled error');
+    return reply.code(500).send({
+      error: 'InternalServerError',
+      message: `Something went wrong. Quote reference ${reference} when reporting this.`,
+      reference,
+    });
+  });
 
   app.get('/api/health', async () => {
     await prisma.$queryRaw`SELECT 1`;

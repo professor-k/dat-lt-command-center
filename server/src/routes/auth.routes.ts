@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Role } from '@prisma/client';
 import { createHash, randomBytes } from 'node:crypto';
 import bcrypt from 'bcryptjs';
@@ -78,9 +78,51 @@ export async function authRoutes(app: FastifyInstance) {
       { expiresIn: SESSION_TTL },
     );
 
-  app.post('/login', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
+  /**
+   * Signing in has no account to throttle yet, so the attempt is counted against the
+   * address paired with the address being tried. Counting the network address alone would
+   * let one office — where a whole shift shares a public IP — lock itself out at handover,
+   * while counting the email alone would let anyone lock a colleague out of their own
+   * account. Together, ten attempts a minute stays per-person, and guessing at one password
+   * is still throttled.
+   *
+   * Checked inside the handler rather than declared in `config`, because the key is read
+   * from the body and a route throttle runs at onRequest, before there is one. The app-wide
+   * limiter has already run by this point and skips any second one automatically, which is
+   * why this asks the store directly.
+   *
+   * Absent when the app is built with throttling off, as the test suite does: the decorator
+   * only exists once the rate-limit plugin is registered.
+   */
+  const countLoginAttempt = app.hasDecorator('createRateLimit')
+    ? app.createRateLimit({
+        max: 10,
+        timeWindow: '1 minute',
+        keyGenerator: (request: FastifyRequest) => {
+          const body = request.body as { email?: unknown } | undefined;
+          const email = typeof body?.email === 'string' ? body.email.toLowerCase() : 'anonymous';
+          return `login:${request.ip}:${email}`;
+        },
+      })
+    : null;
+
+  app.post('/login', async (request, reply) => {
     const parsed = loginBody.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: 'BadRequest', message: 'Email and password required' });
+
+    if (countLoginAttempt) {
+      // `isAllowed` is only ever true for an allow-listed caller, so an ordinary request
+      // under the limit reports false with `isExceeded` false. Both have to be read.
+      const attempt = await countLoginAttempt(request);
+      if (!attempt.isAllowed && attempt.isExceeded) {
+        // Refused before the hash comparison, which is the expensive half of a sign-in and
+        // the reason throttling this route matters at all.
+        return reply
+          .code(429)
+          .header('retry-after', attempt.ttlInSeconds)
+          .send({ error: 'TooManyRequests', message: 'Too many sign-in attempts; try again shortly' });
+      }
+    }
 
     const { email, password } = parsed.data;
     const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });

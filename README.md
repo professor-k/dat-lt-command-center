@@ -77,6 +77,37 @@ Self-service password reset is off unless `MAIL_TRANSPORT` is configured; there 
 transport yet, so an administrator reset is the supported way back into an account. The
 endpoints, single-use tokens and UI are in place behind that seam.
 
+## Throttling and limits
+
+Requests are counted against the **account** making them, falling back to the network
+address for anything unauthenticated. Counting the address alone would be wrong here: a
+station office reaches the internet through one public IP, so a whole shift would share a
+single 300/minute budget and throttle each other out. The bearer token is verified rather
+than merely decoded, so a forged `sub` cannot spend someone else's budget.
+
+Signing in has no account to count against yet, so an attempt is counted against the address
+paired with the address being tried — ten a minute. Counting the address alone would let one
+office lock itself out at handover; counting the email alone would let anyone lock a
+colleague out of their own account. The check runs before the password hash comparison,
+which is the expensive half of a sign-in.
+
+Unhandled errors return a short reference and nothing else. Every expected failure is
+answered by the route that knows about it, so anything reaching the error handler is a bug,
+and the detail belongs in the log rather than on the wire.
+
+### Capacity
+
+Sized for a line maintenance team, not a public service. On a small single instance, expect
+roughly **50–100 concurrent boards** before mutation bursts start to tell: every change
+broadcasts to every client, and each one refetches the overview, which is a dozen queries.
+Sign-ins are the sharpest limit at **5–10 a second**, because `bcryptjs` is a pure-JavaScript
+implementation and hashes on the event loop rather than in the thread pool; swapping it for a
+native binding is the first thing to do if handover time starts to drag.
+
+Both the event-stream registry and the throttle counters live in process memory, so the
+service runs **one instance**. A second replica would miss half the events and double every
+limit.
+
 ## Roles
 
 | Role       | Capability                                                        |
@@ -198,14 +229,16 @@ ranking, and the date helpers the UI renders deadlines with.
 
 `npm run test:unit` also runs the web suite, which renders pages against a stubbed API in
 jsdom: what each role is offered, the defect actions and the deferral form, the Access
-Control guards, sign-in and password reset, and how the API client treats a 401.
+Control guards, sign-in and password reset, how the API client treats a 401, and the error
+boundary that keeps a render fault from blanking the board.
 
 Integration tests drive the app through `app.inject()` — no socket is bound — against a real
 database, because the rules worth protecting are the ones only a real database enforces:
 grounding on a CRITICAL defect and release on closing or downgrading the last one, both
 removal refusals, the role guards, session revocation, reference allocation under
-concurrency, the MEL paperwork a deferral cannot be had without, and the seed refusing to
-give a production database the published demo administrator. They need a PostgreSQL with the schema applied:
+concurrency, the MEL paperwork a deferral cannot be had without, what the throttle counts
+attempts against, that an unhandled error does not leave by the front door, and the seed
+refusing to give a production database the published demo administrator. They need a PostgreSQL with the schema applied:
 
 ```bash
 docker run -d --name datlt-test -e POSTGRES_PASSWORD=devpass \
@@ -244,7 +277,7 @@ one port. On Railway the service needs:
 
 | Variable              | Value                                          |
 | --------------------- | ---------------------------------------------- |
-| `DATABASE_URL`        | `${{Postgres.DATABASE_URL}}`                   |
+| `DATABASE_URL`        | `${{Postgres.DATABASE_URL}}?connection_limit=20` |
 | `JWT_SECRET`          | long random string                             |
 | `SEED_ON_BOOT`        | `true` (idempotent — skips if data exists)     |
 | `NODE_ENV`            | `production`                                   |
@@ -252,3 +285,13 @@ one port. On Railway the service needs:
 | `CORS_ORIGINS`        | only if a browser on another origin calls the API — unset means same-origin only |
 
 Set `SEED_FORCE=true` for one boot to rebuild the reference dataset from scratch.
+
+Prisma otherwise sizes the pool at `cpus × 2 + 1`, which on a small container is about five —
+too few for an overview that issues a dozen queries at once and is refetched by every open
+board whenever anything changes. Keep Postgres' own `max_connections` above whatever the
+figure is raised to.
+
+Responses carry a content security policy allowing scripts and connections from the app's own
+origin only, with the typeface from Google Fonts as the single exception, plus `nosniff`,
+`no-referrer`, and HSTS in production. Anything added to the SPA that loads from a third
+origin has to be allowed in `app.ts` or the browser will drop it silently.
